@@ -1,6 +1,6 @@
 {
   "name": "@averildwi/nest-common",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Automated generator to inject a complete common folder into NestJS",
   "main": "index.js",
   "bin": {
