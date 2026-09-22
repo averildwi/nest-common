@@ -27,6 +27,60 @@ function escapeForSingleQuoteString(str) {
   return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
+// Peer-compatible ecosystem versions per NestJS major.
+// Installing bare "latest" breaks whenever the ecosystem ships a new major
+// (e.g. @nestjs/swagger@12 requires @nestjs/common@^12) while the target
+// project is still on an older Nest major.
+const NEST_DEPENDENCY_MATRIX = {
+  10: { config: '^3.3.0', passport: '^10.0.3', swagger: '^7.4.2' },
+  11: { config: '^4.0.2', passport: '^11.0.5', swagger: '^11.2.0' },
+  12: { config: '^12.0.0', passport: '^12.0.0', swagger: '^12.0.0' },
+  default: { config: 'latest', passport: 'latest', swagger: 'latest' },
+};
+
+async function detectNestMajor() {
+  const readMajor = (range) => {
+    const match = String(range || '').match(/(\d+)\s*\./);
+    return match ? Number(match[1]) : null;
+  };
+
+  // 1) Most reliable: the version actually installed in node_modules.
+  try {
+    const installedPkgPath = path.join(
+      process.cwd(),
+      'node_modules',
+      '@nestjs',
+      'common',
+      'package.json',
+    );
+    if (fs.existsSync(installedPkgPath)) {
+      const installedPkg = await fs.readJson(installedPkgPath);
+      const major = readMajor(installedPkg.version);
+      if (major) return major;
+    }
+  } catch (err) {
+    // fall through to package.json declaration
+  }
+
+  // 2) Fallback: the declared range inside the project's package.json.
+  try {
+    const pkgJsonPath = path.join(process.cwd(), 'package.json');
+    if (fs.existsSync(pkgJsonPath)) {
+      const pkgJson = await fs.readJson(pkgJsonPath);
+      const declared =
+        (pkgJson.dependencies && pkgJson.dependencies['@nestjs/common']) ||
+        (pkgJson.devDependencies && pkgJson.devDependencies['@nestjs/common']) ||
+        (pkgJson.peerDependencies && pkgJson.peerDependencies['@nestjs/common']);
+      const major = readMajor(declared);
+      if (major) return major;
+    }
+  } catch (err) {
+    // fall through to null
+  }
+
+  return null;
+}
+
 async function generateCommon() {
   const sourceDir = path.join(__dirname, 'templates', 'common');
   const targetDir = path.join(process.cwd(), 'src', 'common');
@@ -341,17 +395,32 @@ async function generateCommon() {
 
   // ── [5/5] Install dependencies ───────────────────────────────
   try {
+    const nestMajor = await detectNestMajor();
+    const matrix = NEST_DEPENDENCY_MATRIX[nestMajor] || NEST_DEPENDENCY_MATRIX.default;
+
+    if (nestMajor) {
+      log('cyan', `\n📦 [5/5] Installing dependencies compatible with @nestjs/common v${nestMajor}...`);
+    } else {
+      log('cyan', '\n📦 [5/5] Installing core framework and ecosystem dependencies...');
+      log('yellow', '⚠️ [Warning] Could not detect your @nestjs/common version — falling back to the latest ecosystem versions.');
+    }
+
     const dependencies = [
-      '@nestjs/config',
-      '@nestjs/passport',
-      '@nestjs/swagger',
+      `@nestjs/config@${matrix.config}`,
+      `@nestjs/passport@${matrix.passport}`,
+      `@nestjs/swagger@${matrix.swagger}`,
       'class-validator',
       'class-transformer',
       'joi',
     ].join(' ');
 
-    log('cyan', '\n📦 [5/5] Installing core framework and ecosystem dependencies...');
-    execSync(`npm install ${dependencies}`, { stdio: 'inherit' });
+    try {
+      execSync(`npm install ${dependencies}`, { stdio: 'inherit' });
+    } catch (installErr) {
+      log('yellow', '⚠️ [Warning] npm reported a peer dependency conflict — retrying once with --legacy-peer-deps...');
+      execSync(`npm install ${dependencies} --legacy-peer-deps`, { stdio: 'inherit' });
+    }
+
     log('green', '✅ [Success] All required dependencies successfully installed via npm.');
   } catch (err) {
     fail('npm dependency installation failed. Please check your network or package.json.', err);

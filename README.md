@@ -29,6 +29,12 @@ npm install @nestjs/config @nestjs/passport @nestjs/swagger
 npm install class-validator class-transformer joi
 ```
 
+The CLI reads the `@nestjs/common` version already present in your project and
+pins each package to the matching major (Nest 10, 11, or 12), so a new
+ecosystem major never breaks your install with `ERESOLVE`. If the version
+can't be detected, it falls back to `latest`, and any remaining peer conflict
+is retried once with `--legacy-peer-deps`.
+
 You still need `@nestjs/common`, `@nestjs/core`, and `@prisma/client`
 (only if you use `PrismaExceptionFilter`) set up in your project beforehand.
 
