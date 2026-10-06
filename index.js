@@ -81,6 +81,124 @@ async function detectNestMajor() {
   return null;
 }
 
+/**
+ * Rewrites the PrismaExceptionFilter import so it works with the new
+ * "prisma-client" generator (used by @averildwi/nest-prisma), which does
+ * NOT export the `Prisma` namespace from "@prisma/client" — it only
+ * exists inside the generated client directory. The output path is read
+ * from prisma/schema.prisma, so both "../src/generated/prisma" and
+ * custom locations like "../generated/prisma" are supported.
+ *
+ * Old "prisma-client-js" projects keep the "@prisma/client" import.
+ */
+async function patchPrismaFilterImport() {
+  const schemaPath = path.join(process.cwd(), 'prisma', 'schema.prisma');
+  const filterPath = path.join(
+    process.cwd(),
+    'src',
+    'common',
+    'filters',
+    'prisma-exception.filter.ts',
+  );
+  if (!fs.existsSync(schemaPath) || !fs.existsSync(filterPath)) return null;
+
+  let schema;
+  try {
+    schema = await fs.readFile(schemaPath, 'utf8');
+  } catch (err) {
+    return null;
+  }
+
+  const genMatch = schema.match(/generator\s+\w+\s*\{([\s\S]*?)\}/);
+  if (!genMatch) return null;
+
+  const provider = (genMatch[1].match(/provider\s*=\s*"([^"]+)"/) || [])[1];
+  if (provider !== 'prisma-client') return null;
+
+  const output = (genMatch[1].match(/output\s*=\s*"([^"]+)"/) || [])[1];
+  if (!output) return null;
+
+  const outDir = path.resolve(path.dirname(schemaPath), output);
+  const clientEntry = path.join(outDir, 'client');
+  if (!fs.existsSync(`${clientEntry}.ts`) && !fs.existsSync(`${clientEntry}.js`)) {
+    log('yellow', `⚠️ [Warning] Prisma client not found at "${outDir}" — run "npx prisma generate", then fix the import in prisma-exception.filter.ts manually.`);
+    return null;
+  }
+
+  let rel = path
+    .relative(path.dirname(filterPath), outDir)
+    .replace(/\\/g, '/');
+  if (!rel.startsWith('.')) rel = `./${rel}`;
+  const importPath = `${rel}/client.js`;
+
+  let content = await fs.readFile(filterPath, 'utf8');
+  const original = content;
+  content = content.replace(
+    /import\s*\{\s*Prisma\s*\}\s*from\s*['"]@prisma\/client['"];?/,
+    `import { Prisma } from '${importPath}';`,
+  );
+  if (content === original) return null;
+
+  await fs.writeFile(filterPath, content, 'utf8');
+  return importPath;
+}
+
+/** Prisma is considered present when a schema exists or @prisma/client is installed. */
+async function detectPrisma() {
+  if (fs.existsSync(path.join(process.cwd(), 'prisma', 'schema.prisma'))) return true;
+  return fs.existsSync(path.join(process.cwd(), 'node_modules', '@prisma', 'client'));
+}
+
+/**
+ * @nestjs/config@12 switched env validation to Standard Schema V1, where
+ * vendor-specific options (Joi's abortEarly/allowUnknown) must be nested
+ * inside `libraryOptions`. Older majors (3/4) accept them directly.
+ */
+async function detectConfigMajor(fallbackMajor) {
+  try {
+    const installedPath = path.join(
+      process.cwd(),
+      'node_modules',
+      '@nestjs',
+      'config',
+      'package.json',
+    );
+    if (fs.existsSync(installedPath)) {
+      const installed = await fs.readJson(installedPath);
+      const match = String(installed.version || '').match(/(\d+)\s*\./);
+      if (match) return Number(match[1]);
+    }
+  } catch (err) {
+    // fall through to matrix fallback
+  }
+  const matrixSpec = (NEST_DEPENDENCY_MATRIX[fallbackMajor] || NEST_DEPENDENCY_MATRIX.default).config;
+  const match = String(matrixSpec).match(/(\d+)\s*\./);
+  return match ? Number(match[1]) : 0;
+}
+
+/** Nests Joi-specific validationOptions inside `libraryOptions` (Standard Schema V1). */
+async function patchAppConfigValidationOptions() {
+  const modulePath = path.join(
+    process.cwd(),
+    'src',
+    'common',
+    'config',
+    'app-config.module.ts',
+  );
+  if (!fs.existsSync(modulePath)) return false;
+
+  let content = await fs.readFile(modulePath, 'utf8');
+  const original = content;
+  content = content.replace(
+    /validationOptions:\s*\{\s*abortEarly:\s*false,\s*allowUnknown:\s*true,\s*\}/,
+    `validationOptions: {\n              libraryOptions: {\n                abortEarly: false,\n                allowUnknown: true,\n              },\n            }`,
+  );
+  if (content === original) return false;
+
+  await fs.writeFile(modulePath, content, 'utf8');
+  return true;
+}
+
 async function generateCommon() {
   const sourceDir = path.join(__dirname, 'templates', 'common');
   const targetDir = path.join(process.cwd(), 'src', 'common');
@@ -137,9 +255,12 @@ async function generateCommon() {
     },
   ]);
 
+  const nestMajor = await detectNestMajor();
+  const configMajor = await detectConfigMajor(nestMajor);
 
   // ── [1/5] Copy common folder ──
   let skippedFiles = [];
+  let hasPrisma = false;
   try {
     log('cyan', '📂 [1/5] Injecting universal common modules into src/common...');
 
@@ -173,9 +294,34 @@ async function generateCommon() {
       errorOnExist: false,
     });
 
+    const hasPrismaDetected = await detectPrisma();
+    hasPrisma = hasPrismaDetected;
+    if (!hasPrismaDetected) {
+      const prismaFilterPath = path.join(targetDir, 'filters', 'prisma-exception.filter.ts');
+      if (fs.existsSync(prismaFilterPath)) {
+        await fs.remove(prismaFilterPath);
+        log('yellow', '⚠️ [Skip] No Prisma detected — prisma-exception.filter.ts was NOT created. Re-run this CLI after setting up Prisma if you want it.');
+      }
+    }
+
     if (skippedFiles.length > 0) {
       log('yellow', `⚠️ [Skip] ${skippedFiles.length} existing file(s) were not overwritten:`);
       skippedFiles.forEach((f) => console.log(`    - src/common/${f}`));
+    }
+
+    let prismaImportPath = null;
+    if (hasPrisma) {
+      prismaImportPath = await patchPrismaFilterImport();
+      if (prismaImportPath) {
+        log('green', `✅ [Success] PrismaExceptionFilter import rewritten to "${prismaImportPath}" (new prisma-client generator detected).`);
+      }
+    }
+
+    if (configMajor >= 12) {
+      const patched = await patchAppConfigValidationOptions();
+      if (patched) {
+        log('green', '✅ [Success] AppConfigModule validationOptions adapted for @nestjs/config v12 (Standard Schema libraryOptions).');
+      }
     }
 
     log('green', '✅ [Success] Common boilerplate folder successfully copied!');
@@ -190,7 +336,7 @@ async function generateCommon() {
       let appModuleContent = await fs.readFile(appModulePath, 'utf8');
       const original = appModuleContent;
 
-      const hasImportLine = /from\s+['"]\.\/common\/config\/app-config\.module['"]/.test(appModuleContent);
+      const hasImportLine = /from\s+['"]\.\/common\/config\/app-config\.module(\.js)?['"]/.test(appModuleContent);
       const hasModuleUsage = /AppConfigModule\.forProject\s*\(/.test(appModuleContent);
 
       if (hasImportLine && hasModuleUsage) {
@@ -198,8 +344,8 @@ async function generateCommon() {
       } else {
         if (!hasImportLine) {
           const importLines =
-            `import { AppConfigModule } from './common/config/app-config.module';\n` +
-            `import { HashingModule } from './common/hashing/hashing.module';\n`;
+            `import { AppConfigModule } from './common/config/app-config.module.js';\n` +
+            `import { HashingModule } from './common/hashing/hashing.module.js';\n`;
 
           const lastImportMatch = [...appModuleContent.matchAll(/^import .+;$/gm)].pop();
           if (lastImportMatch) {
@@ -251,11 +397,13 @@ async function generateCommon() {
 
       if (!hasCommonImport) {
         let importBlock =
-          `import { createValidationPipe } from './common/pipes/validation.pipe.config';\n` +
-          `import { TransformInterceptor } from './common/interceptors/transform.interceptor';\n` +
-          `import { LoggerInterceptor } from './common/interceptors/logger.interceptor';\n` +
-          `import { GlobalExceptionFilter } from './common/filters/global-exception.filter';\n` +
-          `import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter';\n`;
+          `import { createValidationPipe } from './common/pipes/validation.pipe.config.js';\n` +
+          `import { TransformInterceptor } from './common/interceptors/transform.interceptor.js';\n` +
+          `import { LoggerInterceptor } from './common/interceptors/logger.interceptor.js';\n` +
+          `import { GlobalExceptionFilter } from './common/filters/global-exception.filter.js';\n`;
+        if (hasPrisma) {
+          importBlock += `import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter.js';\n`;
+        }
 
         if (answers.useSwagger && !mainContent.includes("from '@nestjs/swagger'")) {
           importBlock += `import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';\n`;
@@ -281,7 +429,7 @@ async function generateCommon() {
         injectionCode += `  });\n`;
         injectionCode += `  app.useGlobalPipes(createValidationPipe());\n`;
         injectionCode += `  app.useGlobalInterceptors(new LoggerInterceptor(), new TransformInterceptor());\n`;
-        injectionCode += `  app.useGlobalFilters(new GlobalExceptionFilter(), new PrismaExceptionFilter());\n`;
+        injectionCode += `  app.useGlobalFilters(new GlobalExceptionFilter()${hasPrisma ? ', new PrismaExceptionFilter()' : ''});\n`;
       } else {
         log('yellow', '⚠️ [Skip] CORS/pipes/interceptors/filters already configured in main.ts.');
       }
@@ -395,7 +543,6 @@ async function generateCommon() {
 
   // ── [5/5] Install dependencies ───────────────────────────────
   try {
-    const nestMajor = await detectNestMajor();
     const matrix = NEST_DEPENDENCY_MATRIX[nestMajor] || NEST_DEPENDENCY_MATRIX.default;
 
     if (nestMajor) {

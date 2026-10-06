@@ -38,8 +38,22 @@ is retried once with `--legacy-peer-deps`.
 You still need `@nestjs/common`, `@nestjs/core`, and `@prisma/client`
 (only if you use `PrismaExceptionFilter`) set up in your project beforehand.
 
-> If your ORM isn't Prisma, just skip `PrismaExceptionFilter` — everything
+> If your ORM isn't Prisma, the CLI detects it automatically and skips
+> `PrismaExceptionFilter` entirely (no broken imports) — everything
 > else works fine.
+
+### Compatibility notes
+
+- **Nest 10 / 11 / 12, CommonJS and ESM** — template imports use explicit
+  `.js` extensions, which compile and run under both module systems.
+- **`@averildwi/nest-prisma@2.0.0`** — the new `prisma-client` generator does
+  not export the `Prisma` namespace from `@prisma/client`. The CLI reads the
+  generator `output` from `prisma/schema.prisma` and rewrites
+  `prisma-exception.filter.ts` to import from the generated client directly,
+  wherever it lives.
+- **`@nestjs/config@12`** switched env validation to Standard Schema V1, so
+  the CLI nests Joi's `abortEarly`/`allowUnknown` inside
+  `validationOptions.libraryOptions` when it detects config v12.
 
 ## What the CLI Does
 

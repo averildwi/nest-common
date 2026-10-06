@@ -7,7 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Response } from 'express';
-import { buildErrorResponse } from '../helpers/error-response.helper';
+import { buildErrorResponse } from '../helpers/error-response.helper.js';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -45,3 +45,4 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       .json(buildErrorResponse(statusCode, message, error));
   }
 }
+

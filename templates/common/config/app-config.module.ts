@@ -1,7 +1,7 @@
 import { DynamicModule, Global, Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ObjectSchema } from 'joi';
-import { baseEnvSchema } from './base-env.schema';
+import { baseEnvSchema } from './base-env.schema.js';
 
 @Global()
 @Module({})
@@ -26,3 +26,4 @@ export class AppConfigModule {
     };
   }
 }
+
