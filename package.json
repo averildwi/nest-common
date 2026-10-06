@@ -4,7 +4,7 @@
   "description": "Automated generator to inject a complete common folder into NestJS",
   "main": "index.js",
   "bin": {
-    "nest-common": "./index.js"
+    "nest-common": "index.js"
   },
   "files": [
     "index.js",
