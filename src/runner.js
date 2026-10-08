@@ -36,12 +36,15 @@ function buildContext({ projectRoot, pkgJson, answers, facts, packageManager, in
     };
 }
 
+/** Plan entry kinds that actually mutate the project. `warn` is informational. */
+const ACTIONABLE_KINDS = new Set(['create', 'modify', 'run']);
+
 /** Asks every step what it would do. Never mutates the project. */
 async function buildPlan(ctx) {
     const plan = [];
     for (const step of steps) {
         const { entries, data } = await step.plan(ctx);
-        const actionable = entries.some((e) => e.kind !== 'skip');
+        const actionable = entries.some((e) => ACTIONABLE_KINDS.has(e.kind));
         plan.push({ step, entries, data, actionable });
     }
     return plan;

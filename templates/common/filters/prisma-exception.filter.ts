@@ -18,31 +18,31 @@ export class PrismaExceptionFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
-    let message = 'Terjadi kesalahan pada database';
+    let message = 'Database error';
 
     switch (exception.code) {
       case 'P2002':
         // Unique constraint violation
         status = HttpStatus.CONFLICT;
-        message = 'Data sudah ada (duplikat)';
+        message = 'Data already exists (duplicate)';
         break;
 
       case 'P2025':
         // Record not found
         status = HttpStatus.NOT_FOUND;
-        message = 'Data tidak ditemukan';
+        message = 'Data not found';
         break;
 
       case 'P2003':
         // Foreign key constraint violation
         status = HttpStatus.BAD_REQUEST;
-        message = 'Relasi data tidak valid';
+        message = 'Invalid data relation';
         break;
 
       case 'P2014':
         // Relation violation
         status = HttpStatus.BAD_REQUEST;
-        message = 'Data masih digunakan oleh data lain';
+        message = 'Data is still referenced by other records';
         break;
 
       default:

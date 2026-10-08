@@ -34,6 +34,14 @@ function insertImports(source) {
 
 /** Adds both modules at the top of the `imports: [...]` array. */
 function injectIntoImportsArray(source) {
+    // An empty array gets fully re-formatted; a populated one is prepended to.
+    const emptyArray = /(imports\s*:\s*)\[(\s*)\]/;
+    if (emptyArray.test(source)) {
+        return source.replace(
+            emptyArray,
+            `$1[\n    AppConfigModule.forProject(),\n    HashingModule,\n  ]`,
+        );
+    }
     return source.replace(
         /(imports\s*:\s*\[)/,
         `$1\n    AppConfigModule.forProject(),\n    HashingModule,`,

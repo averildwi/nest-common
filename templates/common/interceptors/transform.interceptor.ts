@@ -37,7 +37,7 @@ export class RawResponse<T> {
 
 /**
  * Return this instance if you want to provide a custom message while still wrapping the response.
- * Example: return new MessageResponse(null, 'User berhasil dihapus');
+ * Example: return new MessageResponse(null, 'User deleted successfully');
  */
 export class MessageResponse<T> {
   constructor(

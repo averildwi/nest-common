@@ -1,6 +1,6 @@
 {
   "name": "@averildwi/nest-common",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Automated generator to inject a complete common folder into NestJS",
   "main": "bin/scaffold.js",
   "bin": {
@@ -12,11 +12,20 @@
     "templates"
   ],
   "scripts": {
-    "test": "node --test test/unit.test.js"
+    "test": "node --test"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "nestjs",
+    "scaffold",
+    "generator",
+    "cli",
+    "boilerplate",
+    "common",
+    "swagger",
+    "prisma"
+  ],
+  "author": "averildwi",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "fs-extra": "^11.3.6",

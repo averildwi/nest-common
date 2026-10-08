@@ -90,28 +90,30 @@ You still need `@nestjs/common`, `@nestjs/core`, and `@prisma/client`
 
 ## What the CLI Does
 
-The pipeline mirrors the steps it prints, and each step is idempotent:
+The pipeline mirrors the steps it prints, and each step is idempotent. Steps
+that have nothing to do are dropped from the plan, so the `[n/total]` counter
+reflects only the steps that actually run:
 
 ```
-[1/6] Copy the common boilerplate into src/common
+[1/*] Copy the common boilerplate into src/common
       (existing files are never overwritten; Prisma filter skipped without Prisma)
    │
    ▼
-[2/6] Register AppConfigModule + HashingModule in src/app.module.ts
+[2/*] Register AppConfigModule + HashingModule in src/app.module.ts
    │
    ▼
-[3/6] Wire src/main.ts — CORS, global pipes/interceptors/filters
+[3/*] Wire src/main.ts — CORS, global pipes/interceptors/filters
       and (optional) Swagger docs
    │
    ▼
-[4/6] Generate/patch .env.example with the required Joi variables
+[4/*] Generate/patch .env.example with the required Joi variables
       (JWT_SECRET is randomly generated per project)
    │
    ▼
-[5/6] Install the ecosystem dependencies (version-pinned to your Nest major)
+[5/*] Install the ecosystem dependencies (version-pinned to your Nest major)
    │
    ▼
-[6/6] Auto-format the injected code with "npm run lint" (when configured)
+[6/*] Auto-format the injected code with "npm run lint" (when configured)
 ```
 
 The CLI is **idempotent** — running it again on a project that already has
@@ -191,7 +193,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { PaginationDto } from '../common/dto/pagination.dto';
-import { Paginated } from '../common/helpers/paginate.helper';
+import { Paginated } from '../common/interceptors/transform.interceptor';
 
 @Controller('users')
 export class UsersController {
@@ -308,12 +310,15 @@ Controller/Service
   needs multi-role per user (array), extend/override it yourself.
 - **`JwtAuthGuard`** must run before `RolesGuard` in the
   `@UseGuards(...)` order, because `RolesGuard` requires `request.user` to be set.
-- Error messages in `PrismaExceptionFilter` are still hardcoded in Indonesian.
-  If you need multi-language support, override the messages in your project.
+- Error messages in `GlobalExceptionFilter` and `PrismaExceptionFilter` are
+  hardcoded in English. If you need multi-language support, override the
+  messages in your project.
 - `baseEnvSchema` only covers universal env vars (DATABASE_URL, PORT,
   NODE_ENV, FRONTEND_URL, JWT_SECRET, JWT_EXPIRES_IN). Project-specific env vars
   are added via `AppConfigModule.forProject(extraSchema)`.
-- Not yet tested with `pnpm`/`yarn` — NPM is assumed.
+- `npm`, `pnpm`, `yarn` and `bun` are supported. The package manager is
+  auto-detected from the lockfile (or the invoking command) and can be forced
+  with `--pm`.
 
 ## License
 

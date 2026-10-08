@@ -17,7 +17,7 @@ export class RolesGuard implements CanActivate {
       [context.getHandler(), context.getClass()],
     );
 
-    // Gak ada @Roles(...) di handler/controller → gak ada restriction
+// No @Roles(...) on the handler/controller means no restriction applies.
     if (!requiredRoles || requiredRoles.length === 0) {
       return true;
     }
@@ -26,15 +26,13 @@ export class RolesGuard implements CanActivate {
     const user = request.user;
 
     if (!user) {
-      throw new ForbiddenException('Akses ditolak');
+      throw new ForbiddenException('Access denied');
     }
 
     const hasRole = requiredRoles.includes(user.role);
 
     if (!hasRole) {
-      throw new ForbiddenException(
-        'Kamu tidak punya akses untuk melakukan aksi ini',
-      );
+      throw new ForbiddenException('You are not allowed to perform this action');
     }
 
     return true;
