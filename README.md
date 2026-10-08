@@ -18,6 +18,39 @@ every new backend: just run one command and you're ready to go.
 npx @averildwi/nest-common
 ```
 
+### CLI options
+
+| Option | Description |
+|---|---|
+| `--no-swagger` | Skip the Swagger API documentation setup |
+| `--pm <name>` | `npm`, `pnpm`, `yarn` or `bun` (default: auto-detect) |
+| `--no-install` | Only write files, don't install packages |
+| `-y, --yes` | Accept defaults and skip all prompts |
+| `--dry-run` | Show what would change without touching anything |
+| `--no-color` | Disable coloured output (`NO_COLOR` is respected too) |
+| `-v, --version` / `-h, --help` | Version / help |
+
+The CLI previews every planned change before touching your project:
+
+```
+  Planned changes
+    + src/common/config/app-config.module.ts
+    ~ src/app.module.ts (add AppConfigModule + HashingModule)
+    ~ src/main.ts (set up Swagger docs at /docs)
+    $ npm install @nestjs/config@^4.0.2 ...
+    - src/common/filters/prisma-exception.filter.ts (No Prisma detected)
+```
+
+Non-interactive use (CI, scripts):
+
+```bash
+npx @averildwi/nest-common --yes
+npx @averildwi/nest-common --yes --dry-run
+```
+
+Without a TTY the CLI never waits for input; `--yes` applies the defaults
+(Swagger on, title "My API", docs at `/docs`), `--no-swagger` opts out.
+
 ### Peer dependencies
 
 This package doesn't bundle its dependencies — the CLI installs them into
@@ -57,37 +90,33 @@ You still need `@nestjs/common`, `@nestjs/core`, and `@prisma/client`
 
 ## What the CLI Does
 
+The pipeline mirrors the steps it prints, and each step is idempotent:
+
 ```
-npx @averildwi/nest-common
+[1/6] Copy the common boilerplate into src/common
+      (existing files are never overwritten; Prisma filter skipped without Prisma)
    │
    ▼
-[1/5] Copy common modules into src/common (existing files are never overwritten)
+[2/6] Register AppConfigModule + HashingModule in src/app.module.ts
    │
    ▼
-[2/5] Register AppConfigModule + HashingModule into src/app.module.ts
+[3/6] Wire src/main.ts — CORS, global pipes/interceptors/filters
+      and (optional) Swagger docs
    │
    ▼
-[3/5] Wire src/main.ts — CORS, global pipes/interceptors/filters,
-      and (optional, asked interactively) Swagger docs
-   │
-   ▼
-[4/5] Generate/patch .env.example with required Joi variables
+[4/6] Generate/patch .env.example with the required Joi variables
       (JWT_SECRET is randomly generated per project)
    │
    ▼
-[5/5] Install dependencies + auto-run lint fix if configured
+[5/6] Install the ecosystem dependencies (version-pinned to your Nest major)
+   │
+   ▼
+[6/6] Auto-format the injected code with "npm run lint" (when configured)
 ```
 
 The CLI is **idempotent** — running it again on a project that already has
-these files won't overwrite your changes; it only fills in what's missing
-and warns you about what it skipped.
-
-### Interactive prompts
-
-| Prompt | When it appears |
-|---|---|
-| Setup Swagger API Documentation? | Always |
-| Swagger title / description / version / docs path | Only if Swagger is enabled |
+these files reports "Everything is already set up. Nothing to do."; it only
+fills in what's missing and warns you about what it skipped.
 
 ## Package Contents
 
