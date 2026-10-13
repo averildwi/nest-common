@@ -12,6 +12,9 @@ An interactive CLI scaffolder that injects a collection of reusable modules
 `.env.example` generation. Built to avoid rewriting the same boilerplate for
 every new backend: just run one command and you're ready to go.
 
+> See the [Usage Guide](docs/USAGE.md) for how to use each injected module
+> (config, validation, pagination, guards, hashing, filters) once it's set up.
+
 ## Installation
 
 ```bash
