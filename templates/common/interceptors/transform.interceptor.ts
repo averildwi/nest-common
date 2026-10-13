@@ -1,12 +1,16 @@
 import {
+  CallHandler,
+  ExecutionContext,
   Injectable,
   NestInterceptor,
-  ExecutionContext,
-  CallHandler,
   StreamableFile,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
+import type { PaginationMeta } from '../helpers/paginate.helper.js';
+
+export type { PaginationMeta } from '../helpers/paginate.helper.js';
 
 export interface StandardResponse<T> {
   statusCode: number;
@@ -15,83 +19,84 @@ export interface StandardResponse<T> {
   timestamp: string;
 }
 
+export interface PaginatedResponse<T> extends StandardResponse<T[]> {
+  meta: PaginationMeta;
+}
+
 /**
- * Return this instance if you want to return paginated data with meta information.
- * Example: return new Paginated(items, { page, limit, total });
+ * Return this from a controller for a list with `meta`.
+ * The service returns paginate(...); the controller wraps it:
+ *   return new Paginated(result.data, result.meta);
  */
 export class Paginated<T> {
   constructor(
-    public data: T[],
-    public meta: Record<string, any>,
+    public readonly data: T[],
+    public readonly meta: PaginationMeta,
   ) {}
 }
 
 /**
- * Return this instance if you want to bypass wrapping entirely
- * (except for StreamableFile which is automatically bypassed).
- * Example: return new RawResponse({ custom: 'shape' });
+ * Return this to skip the envelope entirely. Only for bodies a third party
+ * dictates (for example a payment webhook acknowledgement), never for normal
+ * endpoints. StreamableFile is passed through automatically.
  */
 export class RawResponse<T> {
-  constructor(public payload: T) {}
+  constructor(public readonly payload: T) {}
 }
 
 /**
- * Return this instance if you want to provide a custom message while still wrapping the response.
- * Example: return new MessageResponse(null, 'User deleted successfully');
+ * Return this for a custom success message while keeping the envelope:
+ *   return new MessageResponse(team, 'Team created');
  */
 export class MessageResponse<T> {
   constructor(
-    public payload: T,
-    public message: string,
+    public readonly payload: T,
+    public readonly message: string,
   ) {}
 }
 
 @Injectable()
-export class TransformInterceptor<T>
-  implements NestInterceptor<T, StandardResponse<T> | StreamableFile | any>
-{
-  intercept(
-    context: ExecutionContext,
-    next: CallHandler,
-  ): Observable<StandardResponse<T> | StreamableFile | any> {
+export class TransformInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     return next.handle().pipe(
-      map((result) => {
-        const statusCode = context.switchToHttp().getResponse().statusCode;
-
-        // Totally bypass wrapping for StreamableFile (used for file downloads)
+      map((result: unknown) => {
+        // File downloads and explicit opt-outs are not wrapped.
         if (result instanceof StreamableFile) return result;
+        if (result instanceof RawResponse) return result.payload as unknown;
 
-        // Explicitly bypass wrapping
-        if (result instanceof RawResponse) return result.payload;
+        const statusCode = context
+          .switchToHttp()
+          .getResponse<Response>().statusCode;
+        const timestamp = new Date().toISOString();
 
-        // Pagination
         if (result instanceof Paginated) {
-          return {
+          const body: PaginatedResponse<unknown> = {
             statusCode,
             message: 'Success',
-            data: result.data,
+            data: result.data as unknown[],
             meta: result.meta,
-            timestamp: new Date().toISOString(),
+            timestamp,
           };
+          return body;
         }
 
-        // Custom message
         if (result instanceof MessageResponse) {
-          return {
+          const body: StandardResponse<unknown> = {
             statusCode,
             message: result.message,
-            data: result.payload,
-            timestamp: new Date().toISOString(),
+            data: result.payload as unknown,
+            timestamp,
           };
+          return body;
         }
 
-        // Standard response
-        return {
+        const body: StandardResponse<unknown> = {
           statusCode,
           message: 'Success',
           data: result,
-          timestamp: new Date().toISOString(),
+          timestamp,
         };
+        return body;
       }),
     );
   }
