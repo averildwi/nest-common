@@ -17,6 +17,7 @@ const {
     resolveClientImport,
     rewriteFilterImport,
     wrapValidationOptions,
+    TEMPLATE_CLIENT_IMPORT,
 } = require('../src/transforms/prismaFilter');
 const { parseSpec, isSatisfied } = require('../src/steps/installDeps');
 const { envBlueprint } = require('../src/steps/updateEnv');
@@ -216,14 +217,42 @@ test('env: missingKeys + mergeEnv append only what is missing', () => {
 
 // -- prisma filter transforms --------------------------------------------
 
-test('prismaFilter: rewriteFilterImport only rewrites the @prisma/client import', () => {
-    const original = "import { Prisma } from '@prisma/client';\nimport { Response } from 'express';\n";
+test('prismaFilter: rewriteFilterImport replaces the template import with the project client', () => {
+    const original = "import { Prisma } from '../../../generated/prisma/client.js';\nimport { Response } from 'express';\n";
     const out = rewriteFilterImport(original, '../../generated/prisma/client.js');
     assert.ok(out.includes("import { Prisma } from '../../generated/prisma/client.js';"));
     assert.ok(out.includes("from 'express'"));
 
     // already rewritten -> no change
     assert.equal(rewriteFilterImport(out, '../../generated/prisma/client.js'), null);
+});
+
+test('prismaFilter: template import already matches the root layout (I16)', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const filter = fs.readFileSync(
+        path.join(__dirname, '..', 'templates', 'common', 'filters', 'prisma-exception.filter.ts'),
+        'utf8',
+    );
+    assert.ok(filter.includes(`from '${TEMPLATE_CLIENT_IMPORT}'`));
+    assert.ok(!filter.includes('@prisma/client'));
+});
+
+test('prismaFilter: resolveClientImport maps root and src layouts', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nc-client-'));
+    assert.deepEqual(resolveClientImport(root, '../generated/prisma'), {
+        importPath: TEMPLATE_CLIENT_IMPORT,
+        generated: false,
+    });
+    fs.mkdirSync(path.join(root, 'src', 'generated', 'prisma'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'generated', 'prisma', 'client.ts'), '');
+    assert.deepEqual(resolveClientImport(root, '../src/generated/prisma'), {
+        importPath: '../../generated/prisma/client.js',
+        generated: true,
+    });
 });
 
 test('prismaFilter: wrapValidationOptions nests joi options into libraryOptions', () => {
