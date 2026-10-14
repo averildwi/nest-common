@@ -6,11 +6,12 @@
 [![NestJS](https://img.shields.io/badge/NestJS-v11-red)](https://nestjs.com)
 
 An interactive CLI scaffolder that injects a collection of reusable modules
-(filters, guards, interceptors, pipes, decorators, config, helpers) into a
+(filters, guards, interceptors, pipes, decorators, config, helpers, types) into a
 [NestJS](https://nestjs.com/) project — plus automatic `main.ts` wiring
-(CORS, global pipes/interceptors/filters, optional Swagger setup) and
-`.env.example` generation. Built to avoid rewriting the same boilerplate for
-every new backend: just run one command and you're ready to go.
+(trust proxy, `api` prefix, CORS from `FRONTEND_URL`, global
+pipes/interceptors/filters, optional Swagger setup), a global rate limiter in
+`app.module.ts`, and `.env.example` generation. Built to avoid rewriting the
+same boilerplate for every new backend: just run one command and you're ready to go.
 
 > See the [Usage Guide](docs/USAGE.md) for how to use each injected module
 > (config, validation, pagination, guards, hashing, filters) once it's set up.
@@ -61,7 +62,7 @@ your project automatically:
 
 ```bash
 # installed automatically by the CLI
-npm install @nestjs/config @nestjs/passport @nestjs/swagger
+npm install @nestjs/config @nestjs/passport @nestjs/swagger @nestjs/throttler
 npm install class-validator class-transformer joi
 ```
 
@@ -71,22 +72,36 @@ ecosystem major never breaks your install with `ERESOLVE`. If the version
 can't be detected, it falls back to `latest`, and any remaining peer conflict
 is retried once with `--legacy-peer-deps`.
 
-You still need `@nestjs/common`, `@nestjs/core`, and `@prisma/client`
-(only if you use `PrismaExceptionFilter`) set up in your project beforehand.
+You still need `@nestjs/common`, `@nestjs/core`, and a generated Prisma
+client (only if you use `PrismaExceptionFilter`) set up in your project beforehand.
 
 > If your ORM isn't Prisma, the CLI detects it automatically and skips
 > `PrismaExceptionFilter` entirely (no broken imports) — everything
 > else works fine.
 
+### Recommended order on a new project
+
+```bash
+npx @nestjs/cli@11 new my-app --strict
+cd my-app
+npx @averildwi/nest-prisma --db postgres     # client in generated/prisma (root)
+npx @averildwi/nest-common
+```
+
+Commit after each tool, on its own.
+
 ### Compatibility notes
 
-- **Nest 10 / 11 / 12, CommonJS and ESM** — template imports use explicit
-  `.js` extensions, which compile and run under both module systems.
-- **`@averildwi/nest-prisma@2.0.0`** — the new `prisma-client` generator does
-  not export the `Prisma` namespace from `@prisma/client`. The CLI reads the
-  generator `output` from `prisma/schema.prisma` and rewrites
-  `prisma-exception.filter.ts` to import from the generated client directly,
-  wherever it lives.
+- **Nest 11 (CommonJS) is the tested target.** Nest 10 and 12 get matching
+  dependency versions, but the generated code is verified on Nest 11 only.
+- **Import style follows your project.** Template files use explicit `.js`
+  extensions (valid under CommonJS and ESM); the lines injected into
+  `main.ts`/`app.module.ts` copy the style the file already uses.
+- **Prisma client location.** The filter template imports `Prisma` from
+  `generated/prisma/client` at the project root, the `@averildwi/nest-prisma`
+  default. When `prisma/schema.prisma` points somewhere else, the CLI rewrites
+  the import to match; with the legacy `prisma-client-js` generator it uses
+  `@prisma/client`.
 - **`@nestjs/config@12`** switched env validation to Standard Schema V1, so
   the CLI nests Joi's `abortEarly`/`allowUnknown` inside
   `validationOptions.libraryOptions` when it detects config v12.
@@ -102,11 +117,12 @@ reflects only the steps that actually run:
       (existing files are never overwritten; Prisma filter skipped without Prisma)
    │
    ▼
-[2/*] Register AppConfigModule + HashingModule in src/app.module.ts
+[2/*] Register AppConfigModule, HashingModule, ThrottlerModule and the
+      global ThrottlerGuard (APP_GUARD) in src/app.module.ts
    │
    ▼
-[3/*] Wire src/main.ts — CORS, global pipes/interceptors/filters
-      and (optional) Swagger docs
+[3/*] Wire src/main.ts — trust proxy, api prefix, CORS, global
+      pipes/interceptors/filters and (optional) Swagger docs
    │
    ▼
 [4/*] Generate/patch .env.example with the required Joi variables
@@ -128,14 +144,15 @@ fills in what's missing and warns you about what it skipped.
 | Folder | Contents | Purpose |
 |---|---|---|
 | `config/` | `AppConfigModule`, `baseEnvSchema` | Environment variable validation using Joi, extendable per project |
-| `decorators/` | `CurrentUser`, `Roles` | Extract user from request, specify roles allowed to access endpoints |
+| `decorators/` | `CurrentUser`, `Roles`, `ToBoolean` | Extract the user, restrict roles, parse query-string booleans correctly |
 | `dto/` | `PaginationDto` | Standard pagination query DTO (page, limit, skip) |
 | `filters/` | `GlobalExceptionFilter`, `PrismaExceptionFilter` | Standardize error response shape |
 | `guards/` | `JwtAuthGuard`, `RolesGuard` | JWT authentication + role-based access control |
 | `helpers/` | `buildErrorResponse`, `paginate` | Pure helpers, no dependency injection |
-| `hashing/` | `HashingModule`, `HashingService` | Hash & verify passwords using native scrypt |
+| `hashing/` | `HashingModule`, `HashingService` | Async scrypt hashing for passwords and OTP codes |
 | `interceptors/` | `LoggerInterceptor`, `TransformInterceptor` | Log requests/responses, wrap successful responses in standard shape |
-| `pipes/` | `createValidationPipe` | Standard `ValidationPipe` configuration + per-field error messages |
+| `pipes/` | `createValidationPipe`, `ParseCuidPipe` | Standard `ValidationPipe` configuration; `:id` validation for cuid ids |
+| `types/` | `AuthUser`, `JwtPayload`, `AuthenticatedRequest`, `RoleName` | One shared type for `request.user` |
 
 ## Quick Start
 
@@ -153,31 +170,21 @@ automatically.
 ### 2. Fill in project-specific env vars (optional)
 
 ```typescript
-// src/config/app-config.module.ts
+// src/config/env.schema.ts
 import * as Joi from 'joi';
-import { AppConfigModule } from '../common/config/app-config.module';
 
-export const ProjectConfigModule = AppConfigModule.forProject(
-  Joi.object({
-    // add project-specific env vars here
-    CLOUDINARY_CLOUD_NAME: Joi.string().required(),
-    CLOUDINARY_API_KEY: Joi.string().required(),
-    CLOUDINARY_API_SECRET: Joi.string().required(),
-  }),
-);
+export const projectEnvSchema = Joi.object({
+  CLOUDINARY_URL: Joi.string().uri().required(),
+});
 ```
 
 ```typescript
-// src/app.module.ts — ProjectConfigModule needs to be added manually
-// if you defined extra env vars; AppConfigModule.forProject() (default,
-// no extra schema) is already registered by the CLI.
-import { Module } from '@nestjs/common';
-import { ProjectConfigModule } from './config/app-config.module';
-
-@Module({
-  imports: [ProjectConfigModule /* other modules */],
-})
-export class AppModule {}
+// src/app.module.ts: pass the schema to the call the CLI already added.
+// Do not register AppConfigModule a second time.
+imports: [
+  AppConfigModule.forProject(projectEnvSchema),
+  // ...
+],
 ```
 
 ### 3. Copy values from `.env.example` into your `.env`
@@ -185,71 +192,124 @@ export class AppModule {}
 The CLI generates `.env.example` with the variables required by
 `baseEnvSchema`, using a randomly generated `JWT_SECRET`. Copy what you
 need into your own `.env` (which should stay out of git — the CLI warns
-you if `.env` isn't in `.gitignore`).
+you if `.env` isn't in `.gitignore`). Set `FRONTEND_URL` to your frontend
+origin(s); left empty, no cross-origin request is allowed.
 
-### 4. Use in a controller
+### 4. Make the role type match your schema
+
+`src/common/types/auth-user.ts` ships a placeholder `RoleName = 'ADMIN' | 'USER'`
+and `UserId = string`. Once your schema has a role enum, derive the union from
+it (and use `number` for `UserId` with autoincrement ids):
 
 ```typescript
-import { Controller, Get, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { RolesGuard } from '../common/guards/roles.guard';
-import { Roles } from '../common/decorators/roles.decorator';
-import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { PaginationDto } from '../common/dto/pagination.dto';
-import { Paginated } from '../common/interceptors/transform.interceptor';
+import type { Role } from '../../../generated/prisma/client.js';
+export type RoleName = Role;
+```
 
+### 5. Use in a controller
+
+```typescript
+import { Controller, Get, ParseUUIDPipe, Param, Query, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth } from '@nestjs/swagger';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
+import { RolesGuard } from '../common/guards/roles.guard.js';
+import { Roles } from '../common/decorators/roles.decorator.js';
+import { CurrentUser } from '../common/decorators/current-user.decorator.js';
+import { Paginated } from '../common/interceptors/transform.interceptor.js';
+import type { AuthUser } from '../common/types/auth-user.js';
+import { QueryUserDto } from './dto/query-user.dto.js'; // extends PaginationDto
+import { UsersService } from './users.service.js';
+
+@ApiBearerAuth('access-token')
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('users')
 export class UsersController {
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  constructor(private readonly usersService: UsersService) {}
+
   @Get()
-  async findAll(@Query() pagination: PaginationDto) {
-    const [data, total] = await this.usersService.findAll(pagination);
-    return new Paginated(data, {
-      page: pagination.page,
-      limit: pagination.limit,
-      total,
-    });
+  @Roles('ADMIN')
+  async findAll(@Query() query: QueryUserDto) {
+    // The service returns paginate(rows, total, query.page, query.limit).
+    const result = await this.usersService.findAll(query);
+    return new Paginated(result.data, result.meta);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Get('me')
-  getProfile(@CurrentUser() user: any) {
+  getProfile(@CurrentUser() user: AuthUser) {
     return user;
+  }
+
+  @Get(':id')
+  @Roles('ADMIN')
+  findOne(@Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.findOne(id);
   }
 }
 ```
 
-## What Gets Generated in `main.ts`
+## What Gets Generated
+
+`src/main.ts`:
 
 ```typescript
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Injected by @averildwi/nest-common
+  const config = app.get(ConfigService);
 
-  // ── Injected by @averildwi/nest-common ──
-  const allowedOrigins = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',') : '*';
+  // Behind a proxy, req.ip is the proxy unless we trust it. Trust the exact
+  // hop count (TRUST_PROXY_HOPS), never `true`.
+  app.set('trust proxy', config.getOrThrow<number>('TRUST_PROXY_HOPS'));
+  app.setGlobalPrefix('api');
+
+  // Empty FRONTEND_URL means no cross-origin access (never a wildcard).
+  const allowedOrigins = config
+    .getOrThrow<string>('FRONTEND_URL')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
   app.enableCors({
     origin: allowedOrigins,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
+
   app.useGlobalPipes(createValidationPipe());
   app.useGlobalInterceptors(new LoggerInterceptor(), new TransformInterceptor());
+  // Nest tries the LAST registered filter first, so the catch-all goes first.
   app.useGlobalFilters(new GlobalExceptionFilter(), new PrismaExceptionFilter());
 
   // Only if Swagger is enabled during setup
-  const config = new DocumentBuilder()
+  const swaggerConfig = new DocumentBuilder()
     .setTitle('My API')
     .setDescription('API documentation')
     .setVersion('1.0')
     .addBearerAuth(/* ... */, 'access-token')
     .build();
-  const document = SwaggerModule.createDocument(app, config);
+  const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('docs', app, document, {
     swaggerOptions: { persistAuthorization: true },
   });
 
   await app.listen(process.env.PORT ?? 3000);
 }
+void bootstrap();
+```
+
+`src/app.module.ts`:
+
+```typescript
+@Module({
+  imports: [
+    AppConfigModule.forProject(),
+    HashingModule,
+    // 100 requests per minute per client; add @Throttle() on auth endpoints.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
+    // ...your modules
+  ],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+})
+export class AppModule {}
+```
 bootstrap();
 ```
 
@@ -268,13 +328,13 @@ frontend doesn't need to handle different formats:
 }
 ```
 
-**Error:**
+**Error** (`error` is the HTTP reason phrase, or the Prisma code such as `P2002` for database errors):
 ```json
 {
   "statusCode": 400,
   "message": ["email: email must be an email"],
   "data": null,
-  "error": "BadRequestException",
+  "error": "Bad Request",
   "timestamp": "2026-07-15T10:00:00.000Z"
 }
 ```
@@ -309,16 +369,22 @@ Controller/Service
 - **`.env.example`, not `.env`, is generated/patched** — the CLI never
   touches your real `.env`, so your actual credentials are never at risk.
   `JWT_SECRET` is randomly generated per run, never hardcoded.
-- **`RolesGuard`** assumes `user.role` is a single string. If your project
-  needs multi-role per user (array), extend/override it yourself.
+- **`RolesGuard`** compares a single `user.role` against the `@Roles(...)`
+  list: no `@Roles` allows everyone, no user is `401`, a wrong role is `403`.
+  If your project needs multiple roles per user (array), extend it yourself.
 - **`JwtAuthGuard`** must run before `RolesGuard` in the
   `@UseGuards(...)` order, because `RolesGuard` requires `request.user` to be set.
+- **`HashingService` is async**: always `await hash()` and `verify()`.
 - Error messages in `GlobalExceptionFilter` and `PrismaExceptionFilter` are
   hardcoded in English. If you need multi-language support, override the
   messages in your project.
 - `baseEnvSchema` only covers universal env vars (DATABASE_URL, PORT,
-  NODE_ENV, FRONTEND_URL, JWT_SECRET, JWT_EXPIRES_IN). Project-specific env vars
-  are added via `AppConfigModule.forProject(extraSchema)`.
+  NODE_ENV, FRONTEND_URL, JWT_SECRET, JWT_EXPIRES_IN, TRUST_PROXY_HOPS).
+  Project-specific env vars are added via `AppConfigModule.forProject(extraSchema)`.
+- **`TRUST_PROXY_HOPS`** is the number of reverse proxies in front of the app
+  (`1` behind one Nginx). Leave it `0` when the app is exposed directly. The
+  throttler keys on `req.ip`, so a wrong value either puts every client in
+  one bucket or lets clients spoof their IP.
 - `npm`, `pnpm`, `yarn` and `bun` are supported. The package manager is
   auto-detected from the lockfile (or the invoking command) and can be forced
   with `--pm`.

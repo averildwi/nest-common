@@ -29,21 +29,23 @@ follow so the abstractions actually work.
 src/
   common/
     config/         AppConfigModule, baseEnvSchema
-    decorators/     CurrentUser, Roles
+    decorators/     CurrentUser, Roles, ToBoolean
     dto/            PaginationDto
     filters/        GlobalExceptionFilter, PrismaExceptionFilter
     guards/         JwtAuthGuard, RolesGuard
     hashing/        HashingModule, HashingService
     helpers/        buildErrorResponse, paginate
     interceptors/   LoggerInterceptor, TransformInterceptor
-    pipes/          createValidationPipe
-  app.module.ts     AppConfigModule.forProject() + HashingModule registered
-  main.ts           CORS, global pipes/interceptors/filters, Swagger
+    pipes/          createValidationPipe, ParseCuidPipe
+    types/          AuthUser, JwtPayload, AuthenticatedRequest, RoleName
+  app.module.ts     AppConfigModule.forProject() + HashingModule + ThrottlerModule,
+                    global ThrottlerGuard (APP_GUARD)
+  main.ts           trust proxy, api prefix, CORS, global pipes/interceptors/filters, Swagger
 ```
 
-> Keep the `src/common` path and the explicit `.js` import extensions intact.
-> Every generated file imports its siblings with `.js` so the code compiles
-> and runs under both CommonJS and ESM. Do not rename the folder.
+> Keep the `src/common` path. Template files import their siblings with an
+> explicit `.js` extension so the code compiles under both CommonJS and ESM.
+> Do not rename the folder.
 
 ## Configuration & environment
 
@@ -60,45 +62,38 @@ everywhere.
 | `DATABASE_URL` | required string |
 | `PORT` | number, defaults to `3000` |
 | `NODE_ENV` | `development` / `production` / `test`, defaults to `development` |
-| `FRONTEND_URL` | string, defaults to `*` |
-| `JWT_SECRET` | required string, min 16 chars |
+| `FRONTEND_URL` | comma-separated allowed origins, defaults to empty (no cross-origin access, never `*`) |
+| `JWT_SECRET` | required string, min 32 chars |
 | `JWT_EXPIRES_IN` | string, defaults to `7d` |
+| `TRUST_PROXY_HOPS` | integer >= 0, defaults to `0`: number of reverse proxies in front of the app |
 
 If any required variable is missing or invalid, the app fails fast on boot with
 a Joi error — you never start with a half-configured environment.
 
 ### Adding project-specific variables
 
-Create a module that extends the base schema with your own keys:
+Define the extra keys in a schema and pass it to the `forProject()` call the
+CLI already added. Do not register `AppConfigModule` a second time:
 
 ```typescript
-// src/config/project-config.module.ts
+// src/config/env.schema.ts
 import * as Joi from 'joi';
-import { AppConfigModule } from '../common/config/app-config.module.js';
 
-export const ProjectConfigModule = AppConfigModule.forProject(
-  Joi.object({
-    CLOUDINARY_CLOUD_NAME: Joi.string().required(),
-    CLOUDINARY_API_KEY: Joi.string().required(),
-    CLOUDINARY_API_SECRET: Joi.string().required(),
-  }),
-);
+export const projectEnvSchema = Joi.object({
+  CLOUDINARY_URL: Joi.string().uri().required(),
+});
 ```
-
-Then register **that** module in `app.module.ts` (the CLI only registers the
-default, no-extra-schema version):
 
 ```typescript
 // src/app.module.ts
-import { Module } from '@nestjs/common';
-import { ProjectConfigModule } from './config/project-config.module.js';
-import { HashingModule } from './common/hashing/hashing.module.js';
-
-@Module({
-  imports: [ProjectConfigModule, HashingModule],
-})
-export class AppModule {}
+imports: [
+  AppConfigModule.forProject(projectEnvSchema),
+  HashingModule,
+  // ...
+],
 ```
+
+Add every new variable to `.env.example` too.
 
 ### Reading values
 
@@ -110,13 +105,15 @@ import { ConfigService } from '@nestjs/config';
 export class UploadService {
   constructor(private readonly config: ConfigService) {}
 
-  cloudName() {
-    return this.config.get<string>('CLOUDINARY_CLOUD_NAME');
+  cloudinaryUrl(): string {
+    return this.config.getOrThrow<string>('CLOUDINARY_URL');
   }
 }
 ```
 
-The CLI generates/paches `.env.example` (never your real `.env`) and warns you
+Read env with `ConfigService` everywhere except `main.ts` and `PrismaService`.
+
+The CLI generates/patches `.env.example` (never your real `.env`) and warns you
 if `.env` is not in `.gitignore`. Copy the values you need into your own
 `.env`.
 
@@ -136,12 +133,15 @@ Use `class-validator` decorators. Because `whitelist` +
 `forbidNonWhitelisted` are on, every incoming field must be declared:
 
 ```typescript
+import { ApiProperty } from '@nestjs/swagger';
 import { IsEmail, IsString, MinLength } from 'class-validator';
 
 export class CreateUserDto {
+  @ApiProperty({ example: 'user@example.com' })
   @IsEmail()
   email: string;
 
+  @ApiProperty({ example: 'correct-horse-battery' })
   @IsString()
   @MinLength(8)
   password: string;
@@ -162,9 +162,25 @@ A bad request automatically produces:
   "statusCode": 400,
   "message": ["email: email must be an email"],
   "data": null,
-  "error": "BadRequestException",
+  "error": "Bad Request",
   "timestamp": "2026-07-15T10:00:00.000Z"
 }
+```
+
+### Booleans in query strings
+
+With `enableImplicitConversion`, `@IsBoolean()` alone (and
+`@Transform(({ value }) => value === 'true')`) turns `?active=false` into
+`true`. Use `@ToBoolean()`, which reads the raw value:
+
+```typescript
+import { ToBoolean } from '../../common/decorators/to-boolean.decorator.js';
+
+@ApiPropertyOptional({ example: true })
+@IsOptional()
+@ToBoolean()
+@IsBoolean()
+isActive?: boolean;
 ```
 
 ### Overriding per route
@@ -197,71 +213,88 @@ when needed — import them from
 |---|---|
 | a plain value | wrapped with `message: "Success"` |
 | `new MessageResponse(payload, 'User deleted')` | wrapped with a custom `message` |
-| `new RawResponse(payload)` | bypasses wrapping entirely — raw `payload` is sent |
-| `new Paginated(items, meta)` | wrapped with an extra `meta` field |
+| `new Paginated(result.data, result.meta)` | wrapped with an extra `meta` field |
+| `new RawResponse(payload)` | no envelope, raw `payload` is sent. **Only** when a third party dictates the body (for example a payment webhook acknowledgement). Never for login, lists or normal endpoints |
 | `StreamableFile` | automatically bypassed (file downloads) |
 
+Services return plain data (or `paginate()` results); the controller picks the
+wrapper. Services never return `{ message, data }`.
+
 ```typescript
-import {
-  MessageResponse,
-  RawResponse,
-} from '../common/interceptors/transform.interceptor.js';
+import { MessageResponse } from '../common/interceptors/transform.interceptor.js';
 
 @Delete(':id')
-remove(@Param('id') id: string) {
-  return new MessageResponse(null, 'User deleted successfully');
-}
-
-@Get('health')
-health() {
-  return new RawResponse({ ok: true });
+async remove(@Param('id', ParseUUIDPipe) id: string) {
+  await this.usersService.remove(id);
+  return new MessageResponse(null, 'User deleted');
 }
 ```
 
 ## Pagination
 
-Two pieces work together: the `PaginationDto` query contract and the
-`Paginated` wrapper.
+Three pieces work together: the `PaginationDto` query contract, the
+`paginate()` helper in the service, and the `Paginated` wrapper in the
+controller.
 
 `PaginationDto` exposes `page` (default 1), `limit` (default 20, max 100) and a
-computed `skip` getter. It relies on the global validation pipe's
-`enableImplicitConversion` to cast the query strings to numbers.
+computed `skip` getter. Both fields are always numbers (never `undefined`), so
+you can pass them straight on. List DTOs extend it and declare every filter:
 
 ```typescript
-import { Controller, Get, Query } from '@nestjs/common';
-import { PaginationDto } from '../common/dto/pagination.dto.js';
-import { Paginated } from '../common/interceptors/transform.interceptor.js';
-
-@Controller('users')
-export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
-
-  @Get()
-  async findAll(@Query() pagination: PaginationDto) {
-    const [data, total] = await this.usersService.findAll(pagination);
-    return new Paginated(data, {
-      page: pagination.page,
-      limit: pagination.limit,
-      total,
-    });
-  }
+// src/users/dto/query-user.dto.ts
+export class QueryUserDto extends PaginationDto {
+  @ApiPropertyOptional({ example: 'ann' })
+  @IsOptional()
+  @IsString()
+  search?: string;
 }
 ```
 
-Request `GET /users?page=2&limit=10` returns:
+Service: count and rows in one `$transaction`, explicit `select`:
+
+```typescript
+async findAll(query: QueryUserDto): Promise<PaginatedResult<UserListItem>> {
+  const where = query.search
+    ? { name: { contains: query.search, mode: 'insensitive' as const } }
+    : {};
+  const [rows, total] = await this.prisma.$transaction([
+    this.prisma.user.findMany({
+      where,
+      select: userListSelect,
+      skip: query.skip,
+      take: query.limit,
+      orderBy: { createdAt: 'desc' },
+    }),
+    this.prisma.user.count({ where }),
+  ]);
+  return paginate(rows, total, query.page, query.limit);
+}
+```
+
+Controller:
+
+```typescript
+@Get()
+async findAll(@Query() query: QueryUserDto) {
+  const result = await this.usersService.findAll(query);
+  return new Paginated(result.data, result.meta);
+}
+```
+
+Request `GET /api/users?page=2&limit=10` returns:
 
 ```json
 {
   "statusCode": 200,
   "message": "Success",
   "data": [ "..." ],
-  "meta": { "page": 2, "limit": 10, "total": 42 },
+  "meta": { "total": 42, "page": 2, "limit": 10, "totalPages": 5 },
   "timestamp": "2026-07-15T10:00:00.000Z"
 }
 ```
 
-Use `pagination.skip` for the database offset (see
-[Helpers](#helpers)).
+Never return the `paginate()` result directly from the controller: the
+interceptor would wrap it again into `data: { data, meta }`.
 
 ## Logging (LoggerInterceptor)
 
@@ -283,55 +316,99 @@ for you).
 
 ### Guards
 
-- **`JwtAuthGuard`** extends `AuthGuard('jwt')` — rejects requests without a
-  valid token and populates `request.user`.
-- **`RolesGuard`** reads the roles metadata and compares them against
-  `request.user.role` (a **single string**).
+- **`JwtAuthGuard`** extends `AuthGuard('jwt')`. It rejects requests without a
+  valid token (401) and populates `request.user`.
+- **`RolesGuard`** reads the `@Roles(...)` metadata and compares it against
+  `request.user.role`:
+  - no `@Roles` on the handler or controller: allowed
+  - no `request.user` (JWT guard missing or failed): **401** `Authentication required`
+  - role not in the list: **403** `You are not allowed to perform this action`
+
+There is no global auth guard. Put the guards on each controller or route.
+
+### Types
+
+`src/common/types/auth-user.ts` holds the one shared shape of `request.user`:
+
+```typescript
+export type RoleName = 'ADMIN' | 'USER'; // placeholder, see below
+export type UserId = string;             // number for autoincrement ids
+
+export interface AuthUser { id: UserId; email: string; role: RoleName }
+export interface JwtPayload { sub: UserId; email: string }
+export interface AuthenticatedRequest extends Request { user?: AuthUser }
+```
+
+Once your Prisma schema has a role enum, derive `RoleName` from it so a typo in
+`@Roles(...)` no longer compiles:
+
+```typescript
+import type { Role } from '../../../generated/prisma/client.js';
+export type RoleName = Role; // 'ADMIN' | 'STAFF'
+```
 
 ### Decorators
 
-- **`@Roles('ADMIN')`** — marks the roles allowed to access a handler.
-- **`@CurrentUser()`** — injects `request.user` (or a property when passed a
-  key, e.g. `@CurrentUser('id')`).
+- **`@Roles('ADMIN')`**: the roles allowed to access a handler, typed as `RoleName[]`.
+- **`@CurrentUser()`**: injects `request.user` as `AuthUser`, or one field
+  (`@CurrentUser('id') userId: string`).
 
 ### Usage
 
 ```typescript
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../common/guards/roles.guard.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
+import type { AuthUser } from '../common/types/auth-user.js';
 
+@ApiTags('Users')
+@ApiBearerAuth('access-token')
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('users')
 export class UsersController {
-  @UseGuards(JwtAuthGuard)
+  constructor(private readonly usersService: UsersService) {}
+
   @Get('me')
-  getProfile(@CurrentUser() user: any) {
+  @ApiOperation({ summary: '[AUTH] Get my profile' })
+  getProfile(@CurrentUser() user: AuthUser) {
     return user;
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Get(':id')
   @Roles('ADMIN')
-  @Get()
-  findAll() {
-    return this.usersService.findAll();
+  @ApiOperation({ summary: '[ADMIN] Get a user' })
+  findOne(@Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.findOne(id);
   }
 }
 ```
 
-> **Order matters.** Always put `JwtAuthGuard` **before** `RolesGuard` — the
+> **Order matters.** Always put `JwtAuthGuard` **before** `RolesGuard`: the
 > roles check needs `request.user`, which only exists after JWT auth runs.
 >
-> **Single role only.** `RolesGuard` checks `user.role` as a string. If your
-> users hold multiple roles (an array), copy and extend the guard in your
-> project.
+> **Single role only.** `RolesGuard` checks one `user.role`. If your users hold
+> multiple roles (an array), copy and extend the guard in your project.
+
+### Route parameters
+
+Every `:id` gets a pipe that matches the id type of your schema:
+
+| Id type | Pipe |
+|---|---|
+| `uuid()` | `ParseUUIDPipe` (from `@nestjs/common`) |
+| `autoincrement()` | `ParseIntPipe` (from `@nestjs/common`) |
+| `cuid()` | `ParseCuidPipe` (from `src/common/pipes/parse-cuid.pipe.ts`) |
+
+Without a pipe, a malformed id reaches Prisma and becomes a 500.
 
 ### Providing the `'jwt'` strategy
 
 The guards only work if you register a Passport strategy named `'jwt'` that
-puts the user on `request.user`. A minimal one, wired to the variables that
-`baseEnvSchema` already validates:
+puts an `AuthUser` on `request.user`. Install `passport-jwt` and
+`@nestjs/jwt`, then:
 
 ```typescript
 // src/auth/strategies/jwt.strategy.ts
@@ -339,38 +416,73 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { HashingService } from '../../common/hashing/hashing.service.js';
+import { PrismaService } from '../../prisma/prisma.service.js';
+import type { AuthUser, JwtPayload } from '../../common/types/auth-user.js';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(
     config: ConfigService,
-    private readonly hashing: HashingService,
+    private readonly prisma: PrismaService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: config.get<string>('JWT_SECRET')!,
+      secretOrKey: config.getOrThrow<string>('JWT_SECRET'),
     });
   }
 
-  // Whatever you return here becomes `request.user` — and `request.user.role`
-  // is what RolesGuard reads, so keep a `role` property on it.
-  async validate(payload: { sub: string; role: string }) {
-    return { id: payload.sub, role: payload.role };
+  // The return value becomes request.user. Re-load the user so a deleted or
+  // deactivated account loses access immediately.
+  async validate(payload: JwtPayload): Promise<AuthUser> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: { id: true, email: true, role: true, isActive: true },
+    });
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Account not found or inactive');
+    }
+    return { id: user.id, email: user.email, role: user.role };
   }
 }
 ```
 
-Register it in `auth.module.ts` (`PassportModule.register({ defaultStrategy: 'jwt' })`,
-providers: `[JwtStrategy]`). `JWT_EXPIRES_IN` from your env drives the expiry
-when you sign the token, so `@CurrentUser()` and `@Roles()` both line up with
-the strategy above.
+Register it in `auth.module.ts` (`PassportModule`, `JwtModule.registerAsync`
+reading `JWT_SECRET` and `JWT_EXPIRES_IN` from `ConfigService`, providers:
+`[JwtStrategy]`).
+
+## Rate limiting
+
+`ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }])` and a global
+`ThrottlerGuard` (`APP_GUARD`) are registered in `app.module.ts`: 100 requests
+per minute per client. Tighten auth and OTP endpoints:
+
+```typescript
+import { Throttle } from '@nestjs/throttler';
+
+@Post('login')
+@HttpCode(HttpStatus.OK)
+@Throttle({ default: { limit: 5, ttl: 60_000 } })
+async login(@Body() dto: LoginDto) {
+  return new MessageResponse(await this.authService.login(dto), 'Login successful');
+}
+```
+
+The throttler keys on `req.ip`. Behind a reverse proxy set `TRUST_PROXY_HOPS`
+to the number of proxies (`1` behind one Nginx), which `main.ts` passes to
+`app.set('trust proxy', ...)`:
+
+| `TRUST_PROXY_HOPS` behind one proxy | Result |
+|---|---|
+| `0` | `req.ip` is the proxy: **all clients share one bucket** |
+| `1` | real client IP, correct |
+| (`true`, never used) | `X-Forwarded-For` is trusted blindly: clients spoof a new IP per request |
 
 ## Password hashing
 
-`HashingService` (from the global `HashingModule`) hashes passwords with
-Node's native `scrypt` — no external hashing dependency. Inject it anywhere:
+`HashingService` (from the global `HashingModule`) hashes passwords and OTP
+codes with Node's native `scrypt`, asynchronously, so a login never blocks the
+event loop. Always `await` it:
 
 ```typescript
 import { Injectable } from '@nestjs/common';
@@ -381,36 +493,41 @@ export class AuthService {
   constructor(private readonly hashing: HashingService) {}
 
   async register(email: string, password: string) {
-    const passwordHash = this.hashing.hash(password);
+    const passwordHash = await this.hashing.hash(password);
     // store passwordHash in the database
   }
 
-  async validate(password: string, storedHash: string) {
+  async checkPassword(password: string, storedHash: string): Promise<boolean> {
     return this.hashing.verify(password, storedHash);
   }
 }
 ```
 
-`hash()` returns a self-contained `salt:derivedKey` string — the salt is
-embedded, so you never store it in a separate column. `verify()` uses a
-timing-safe comparison.
+`hash()` returns a self-contained `salt:derivedKey` string: the salt is
+embedded, so you never store it in a separate column. `verify()` rejects
+malformed hashes and compares with `timingSafeEqual`.
 
 ## Error filters
 
-Two global filters standardize error responses.
+Two global filters standardize error responses. `main.ts` registers them in
+this order, which matters (Nest tries the **last** registered filter first):
+
+```typescript
+app.useGlobalFilters(new GlobalExceptionFilter(), new PrismaExceptionFilter());
+```
 
 ### GlobalExceptionFilter
 
-Catches everything. `HttpException`s become their real status code; any other
-`Error` becomes `500` and is logged with its stack trace. The response shape
-matches the success shape:
+Catches everything. `HttpException`s keep their status code; any other
+`Error` becomes `500 Internal server error` and is logged with its stack trace.
+`error` is the HTTP reason phrase of the status, never the class name:
 
 ```json
 {
   "statusCode": 404,
-  "message": "Not Found",
+  "message": "User not found",
   "data": null,
-  "error": "NotFoundException",
+  "error": "Not Found",
   "timestamp": "2026-07-15T10:00:00.000Z"
 }
 ```
@@ -424,14 +541,18 @@ throw new NotFoundException('User not found');
 ### PrismaExceptionFilter
 
 Only copied when Prisma is detected (`prisma/schema.prisma` or
-`@prisma/client`). It maps common Prisma error codes to HTTP responses:
+`@prisma/client`). It imports `Prisma` from `generated/prisma/client` at the
+project root (the CLI adjusts the path if your client lives elsewhere) and maps
+common error codes. `error` is the Prisma code:
 
 | Prisma code | HTTP | Message |
 |---|---|---|
-| `P2002` | 409 | Data already exists (duplicate) |
+| `P2002` | 409 | Data already exists |
 | `P2025` | 404 | Data not found |
 | `P2003` | 400 | Invalid data relation |
 | `P2014` | 400 | Data is still referenced by other records |
+
+Any other code returns `500 Database error` and is logged.
 
 If you set up Prisma **after** scaffolding, re-run the CLI to get the filter.
 
@@ -440,32 +561,33 @@ If you set up Prisma **after** scaffolding, re-run the CLI to get the filter.
 
 ## Helpers
 
-Pure functions — no dependency injection, import and call directly.
+Pure functions: no dependency injection, import and call directly.
 
 ### `paginate`
 
-Builds a paginated result object from a data array and a total count:
+Builds `{ data, meta: { total, page, limit, totalPages } }` from rows and a
+total count. Use it in services (see [Pagination](#pagination)):
 
 ```typescript
 import { paginate } from '../common/helpers/paginate.helper.js';
 
-const [rows, total] = await this.prisma.user.findManyAndCount({
-  skip: pagination.skip,
-  take: pagination.limit,
-});
+const [rows, total] = await this.prisma.$transaction([
+  this.prisma.user.findMany({ select: userListSelect, skip: query.skip, take: query.limit }),
+  this.prisma.user.count(),
+]);
 
-return paginate(rows, total, pagination.page, pagination.limit);
+return paginate(rows, total, query.page, query.limit);
 ```
 
 ### `buildErrorResponse`
 
-Builds the standard error envelope — handy inside custom filters or middleware:
+Builds the standard error envelope, handy inside custom filters or middleware:
 
 ```typescript
 import { buildErrorResponse } from '../common/helpers/error-response.helper.js';
 
 response.status(403).json(
-  buildErrorResponse(403, 'Access denied', 'ForbiddenException'),
+  buildErrorResponse(403, 'You are not allowed to perform this action', 'Forbidden'),
 );
 ```
 
@@ -473,15 +595,18 @@ response.status(403).json(
 
 Follow these and everything above works out of the box:
 
-- [ ] Keep `src/common/...` paths and the explicit `.js` import extensions.
-- [ ] Keep `const app = await NestFactory.create(AppModule);` in `main.ts` and
+- [ ] Keep the `src/common/...` paths.
+- [ ] Keep `const app = await NestFactory.create(...)(AppModule);` in `main.ts` and
       an `imports: [...]` array in `app.module.ts` (auto-wiring depends on
       them).
-- [ ] Add project-specific env vars via `AppConfigModule.forProject(schema)`
-      and register that module manually.
-- [ ] Always order guards `@UseGuards(JwtAuthGuard, RolesGuard)`.
-- [ ] Treat `user.role` as a single string (extend `RolesGuard` for arrays).
-- [ ] Declare every DTO field — unknown fields are rejected.
-- [ ] Use `new Paginated(...)` for lists and the wrapper classes for custom
-      responses.
+- [ ] Add project-specific env vars by passing a schema to the existing
+      `AppConfigModule.forProject(...)` call, and add them to `.env.example`.
+- [ ] Always order guards `@UseGuards(JwtAuthGuard, RolesGuard)`, and type the
+      user as `AuthUser`.
+- [ ] Derive `RoleName` from your Prisma role enum.
+- [ ] Every `:id` has `ParseUUIDPipe`, `ParseIntPipe` or `ParseCuidPipe`.
+- [ ] Declare every DTO field (unknown fields are rejected). Query booleans use
+      `@ToBoolean()`.
+- [ ] Services return `paginate(...)`; controllers return `new Paginated(result.data, result.meta)`.
+- [ ] `await` every `HashingService` call.
 - [ ] Never commit `.env`; use `.env.example` as the template.
