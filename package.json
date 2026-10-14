@@ -1,6 +1,6 @@
 {
   "name": "@averildwi/nest-common",
-  "version": "2.0.1",
+  "version": "3.0.0",
   "description": "Automated generator to inject a complete common folder into NestJS",
   "main": "bin/scaffold.js",
   "bin": {
