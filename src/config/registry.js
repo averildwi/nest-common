@@ -9,10 +9,10 @@ const fsHelpers = require('../utils/fsHelpers');
  * project is still on an older Nest major.
  */
 const NEST_DEPENDENCY_MATRIX = {
-    10: { config: '^3.3.0', passport: '^10.0.3', swagger: '^7.4.2' },
-    11: { config: '^4.0.2', passport: '^11.0.5', swagger: '^11.2.0' },
-    12: { config: '^12.0.0', passport: '^12.0.0', swagger: '^12.0.0' },
-    default: { config: 'latest', passport: 'latest', swagger: 'latest' },
+    10: { config: '^3.3.0', passport: '^10.0.3', swagger: '^7.4.2', throttler: '^6.4.0' },
+    11: { config: '^4.0.2', passport: '^11.0.5', swagger: '^11.2.0', throttler: '^6.4.0' },
+    12: { config: '^12.0.0', passport: '^12.0.0', swagger: '^12.0.0', throttler: '^6.7.0' },
+    default: { config: 'latest', passport: 'latest', swagger: 'latest', throttler: 'latest' },
 };
 
 /** Runtime deps installed by the install step, derived from the detected Nest major. */
@@ -22,6 +22,7 @@ function resolveDependencies(nestMajor) {
         `@nestjs/config@${matrix.config}`,
         `@nestjs/passport@${matrix.passport}`,
         `@nestjs/swagger@${matrix.swagger}`,
+        `@nestjs/throttler@${matrix.throttler}`,
         'class-validator',
         'class-transformer',
         'joi',
