@@ -54,14 +54,14 @@ test('integration: full scaffold wires files, main.ts and .env.example', (t) => 
     assert.ok(main.includes('app.enableCors('));
     assert.ok(main.includes('useGlobalPipes(createValidationPipe())'));
     assert.ok(main.includes('SwaggerModule.setup('));
-    assert.ok(main.includes("import { GlobalExceptionFilter } from './common/filters/global-exception.filter.js';"));
+    assert.ok(main.includes("import { GlobalExceptionFilter } from './common/filters/global-exception.filter';"));
 
     const appModule = fs.readFileSync(path.join(root, 'src', 'app.module.ts'), 'utf8');
     assert.ok(appModule.includes('AppConfigModule.forProject(),'));
     assert.ok(appModule.includes('HashingModule,'));
 
     const env = fs.readFileSync(path.join(root, '.env.example'), 'utf8');
-    for (const key of ['DATABASE_URL', 'PORT', 'NODE_ENV', 'FRONTEND_URL', 'JWT_SECRET', 'JWT_EXPIRES_IN']) {
+    for (const key of ['DATABASE_URL', 'PORT', 'NODE_ENV', 'FRONTEND_URL', 'JWT_SECRET', 'JWT_EXPIRES_IN', 'TRUST_PROXY_HOPS']) {
         assert.ok(new RegExp(`^${key}=`, 'm').test(env), `missing ${key}`);
     }
 });

@@ -1,13 +1,11 @@
 const fsHelpers = require('../utils/fsHelpers');
 const ui = require('../ui/output');
 const { rel } = require('./helpers');
-const { buildImportBlock, buildCorsBlock, buildSwaggerBlock, applyToMain } = require('../transforms/mainTs');
-
-const COMMON_MARKER = "from './common/pipes/validation.pipe.config'";
+const { buildImportBlock, buildCorsBlock, buildSwaggerBlock, applyToMain, usesJsExtension } = require('../transforms/mainTs');
 
 module.exports = {
     id: 'main',
-    title: 'Wire CORS, pipes, interceptors, filters and Swagger in main.ts',
+    title: 'Wire trust proxy, prefix, CORS, pipes, interceptors, filters and Swagger in main.ts',
 
     async plan(ctx) {
         const file = rel(ctx, ctx.paths.mainTs);
@@ -32,7 +30,7 @@ module.exports = {
         if (data.hasCors) {
             entries.push({ kind: 'skip', label: file, reason: 'CORS/pipes/interceptors/filters already configured' });
         } else {
-            entries.push({ kind: 'modify', label: `${file} (enable CORS + global pipes/interceptors/filters)` });
+            entries.push({ kind: 'modify', label: `${file} (trust proxy, api prefix, CORS from FRONTEND_URL, global pipes/interceptors/filters)` });
         }
 
         if (!ctx.answers.useSwagger) {
@@ -70,6 +68,8 @@ module.exports = {
                   useSwagger: ctx.answers.useSwagger,
                   hasPrisma: ctx.hasPrisma,
                   needsSwaggerLib: !source.includes("from '@nestjs/swagger'"),
+                  js: usesJsExtension(source),
+                  source,
               })
             : null;
 
@@ -92,7 +92,7 @@ module.exports = {
 };
 
 function analyze(source, ctx) {
-    const hasCommonImports = source.includes(COMMON_MARKER) || source.includes('createValidationPipe');
+    const hasCommonImports = /validation\.pipe\.config/.test(source) || source.includes('createValidationPipe');
     return {
         hasCommonImports,
         hasCors: source.includes('app.enableCors'),
