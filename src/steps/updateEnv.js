@@ -5,7 +5,7 @@ const ui = require('../ui/output');
 const { rel } = require('./helpers');
 const { buildEnvFile, mergeEnv } = require('../transforms/envExample');
 
-const REQUIRED_KEYS = ['DATABASE_URL', 'PORT', 'NODE_ENV', 'FRONTEND_URL', 'JWT_SECRET', 'JWT_EXPIRES_IN'];
+const REQUIRED_KEYS = ['DATABASE_URL', 'PORT', 'NODE_ENV', 'FRONTEND_URL', 'JWT_SECRET', 'JWT_EXPIRES_IN', 'TRUST_PROXY_HOPS'];
 
 /** Placeholder values written into .env.example. JWT_SECRET is random per project. */
 function envBlueprint(crypto) {
@@ -13,9 +13,12 @@ function envBlueprint(crypto) {
         DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/mydb?schema=public',
         PORT: '3000',
         NODE_ENV: 'development',
-        FRONTEND_URL: '*',
+        // Comma-separated allowed origins, e.g. http://localhost:5173. Empty = no cross-origin access.
+        FRONTEND_URL: '',
         JWT_SECRET: crypto.randomBytes(32).toString('hex'),
         JWT_EXPIRES_IN: '7d',
+        // Reverse proxies in front of the app in production (0 = none).
+        TRUST_PROXY_HOPS: '0',
     };
 }
 
