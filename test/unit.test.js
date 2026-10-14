@@ -17,6 +17,7 @@ const {
     resolveClientImport,
     rewriteFilterImport,
     wrapValidationOptions,
+    TEMPLATE_CLIENT_IMPORT,
 } = require('../src/transforms/prismaFilter');
 const { parseSpec, isSatisfied } = require('../src/steps/installDeps');
 const { envBlueprint } = require('../src/steps/updateEnv');
@@ -49,10 +50,11 @@ test('argv: --pm alias + invalid values fail with exit code 2', () => {
 // -- registry ------------------------------------------------------------
 
 test('registry: dependency matrix pins the matching ecosystem major', () => {
-    assert.deepEqual(resolveDependencies(11).slice(0, 3), [
+    assert.deepEqual(resolveDependencies(11).slice(0, 4), [
         '@nestjs/config@^4.0.2',
         '@nestjs/passport@^11.0.5',
         '@nestjs/swagger@^11.2.0',
+        '@nestjs/throttler@^6.4.0',
     ]);
     assert.deepEqual(resolveDependencies(12).slice(0, 3), [
         '@nestjs/config@^12.0.0',
@@ -66,6 +68,7 @@ test('registry: dependency matrix pins the matching ecosystem major', () => {
         config: 'latest',
         passport: 'latest',
         swagger: 'latest',
+        throttler: 'latest',
     });
 });
 
@@ -89,16 +92,32 @@ import { AppController } from './app.controller';
 export class AppModule {}
 `;
 
-test('app.module: registers both modules and is idempotent', () => {
+test('app.module: registers config, hashing, throttler + APP_GUARD and is idempotent', () => {
     const out = register(APP_MODULE).source;
-    assert.ok(out.includes("AppConfigModule } from './common/config/app-config.module.js'"));
-    assert.ok(out.includes("HashingModule } from './common/hashing/hashing.module.js'"));
+    // CommonJS style file -> imports without .js, matching the file
+    assert.ok(out.includes("AppConfigModule } from './common/config/app-config.module'"));
+    assert.ok(out.includes("HashingModule } from './common/hashing/hashing.module'"));
+    assert.ok(out.includes("import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';"));
+    assert.ok(out.includes("import { APP_GUARD } from '@nestjs/core';"));
     assert.ok(out.includes('AppConfigModule.forProject(),'));
     assert.ok(out.includes('    HashingModule,'));
+    assert.ok(out.includes('ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),'));
+    assert.ok(out.includes('{ provide: APP_GUARD, useClass: ThrottlerGuard },'));
     assert.ok(out.indexOf('AppConfigModule.forProject(),') < out.indexOf('controllers:'));
 
     assert.equal(register(out), null);
     assert.ok(isRegistered(out));
+});
+
+test('app.module: appends the guard to an existing providers array', () => {
+    const src = APP_MODULE.replace('controllers: [AppController],', 'controllers: [AppController],\n  providers: [AppService],');
+    const out = register(src).source;
+    assert.match(out, /providers: \[\n {4}\{ provide: APP_GUARD, useClass: ThrottlerGuard \},AppService\]|providers: \[\n {4}\{ provide: APP_GUARD, useClass: ThrottlerGuard \},\n?\s*AppService\]/);
+});
+
+test('app.module: keeps CRLF line endings', () => {
+    const out = register(APP_MODULE.replace(/\n/g, '\r\n')).source;
+    assert.ok(!/(?<!\r)\n/.test(out), 'no bare LF');
 });
 
 test('app.module: tolerates imports with .js extensions (ESM projects)', () => {
@@ -107,6 +126,7 @@ test('app.module: tolerates imports with .js extensions (ESM projects)', () => {
         "from './app.controller.js'",
     );
     const out = register(esmStyle).source;
+    assert.ok(out.includes("from './common/config/app-config.module.js'"));
     assert.ok(isRegistered(out));
 });
 
@@ -129,10 +149,16 @@ async function bootstrap() {
 bootstrap();
 `;
 
-test('main.ts: import block reflects swagger + prisma options', () => {
+test('main.ts: import block reflects swagger + prisma options and the file style', () => {
     const full = buildImportBlock({ useSwagger: true, hasPrisma: true, needsSwaggerLib: true });
     assert.ok(full.includes('prisma-exception.filter.js'));
     assert.ok(full.includes("@nestjs/swagger'"));
+    assert.ok(full.includes("import { ConfigService } from '@nestjs/config';"));
+    assert.ok(full.includes("import { NestExpressApplication } from '@nestjs/platform-express';"));
+
+    const cjs = buildImportBlock({ useSwagger: false, hasPrisma: false, needsSwaggerLib: false, js: false });
+    assert.ok(cjs.includes("from './common/pipes/validation.pipe.config';"));
+    assert.ok(!cjs.includes('.js'));
 
     const noSwagger = buildImportBlock({ useSwagger: false, hasPrisma: true, needsSwaggerLib: true });
     assert.ok(!noSwagger.includes('@nestjs/swagger'));
@@ -142,12 +168,21 @@ test('main.ts: import block reflects swagger + prisma options', () => {
     assert.ok(!noPrisma.includes('@nestjs/swagger'));
 });
 
-test('main.ts: cors block reflects prisma presence', () => {
+test('main.ts: injected block follows the standard order, no CORS wildcard', () => {
     const withPrisma = buildCorsBlock({ hasPrisma: true });
-    assert.ok(withPrisma.includes('app.enableCors('));
-    assert.ok(withPrisma.includes('useGlobalPipes(createValidationPipe())'));
-    assert.ok(withPrisma.includes('useGlobalInterceptors('));
-    assert.ok(withPrisma.includes('new GlobalExceptionFilter(), new PrismaExceptionFilter()'));
+    const order = [
+        "app.set('trust proxy', config.getOrThrow<number>('TRUST_PROXY_HOPS'));",
+        "app.setGlobalPrefix('api');",
+        'app.enableCors(',
+        'useGlobalPipes(createValidationPipe())',
+        'useGlobalInterceptors(',
+        'new GlobalExceptionFilter(), new PrismaExceptionFilter()',
+    ].map((s) => withPrisma.indexOf(s));
+    assert.ok(order.every((i) => i >= 0), String(order));
+    assert.deepEqual([...order].sort((a, b) => a - b), order);
+    assert.ok(!withPrisma.includes("'*'"));
+    assert.ok(!withPrisma.includes('process.env'));
+    assert.ok(withPrisma.includes('.filter(Boolean)'));
 
     const withoutPrisma = buildCorsBlock({ hasPrisma: false });
     assert.ok(withoutPrisma.includes('app.useGlobalFilters(new GlobalExceptionFilter());'));
@@ -168,8 +203,10 @@ test('main.ts: applyToMain inserts imports after the last import and code after 
     });
     assert.ok(result);
     assert.ok(result.source.indexOf("from '@nestjs/swagger'") > result.source.indexOf("from './app.module'"));
-    assert.ok(result.source.indexOf('app.enableCors(') > result.source.indexOf('NestFactory.create(AppModule);'));
+    assert.ok(result.source.includes('NestFactory.create<NestExpressApplication>(AppModule);'));
+    assert.ok(result.source.indexOf('app.enableCors(') > result.source.indexOf('NestFactory.create<NestExpressApplication>(AppModule);'));
     assert.ok(result.source.includes('await app.listen'));
+    assert.match(result.source, /^void bootstrap\(\);$/m);
 
     // The STEP re-analyzes before calling: with everything already present it
     // passes no import block and no injection code, so the transform is a no-op.
@@ -216,14 +253,42 @@ test('env: missingKeys + mergeEnv append only what is missing', () => {
 
 // -- prisma filter transforms --------------------------------------------
 
-test('prismaFilter: rewriteFilterImport only rewrites the @prisma/client import', () => {
-    const original = "import { Prisma } from '@prisma/client';\nimport { Response } from 'express';\n";
+test('prismaFilter: rewriteFilterImport replaces the template import with the project client', () => {
+    const original = "import { Prisma } from '../../../generated/prisma/client.js';\nimport { Response } from 'express';\n";
     const out = rewriteFilterImport(original, '../../generated/prisma/client.js');
     assert.ok(out.includes("import { Prisma } from '../../generated/prisma/client.js';"));
     assert.ok(out.includes("from 'express'"));
 
     // already rewritten -> no change
     assert.equal(rewriteFilterImport(out, '../../generated/prisma/client.js'), null);
+});
+
+test('prismaFilter: template import already matches the root layout (I16)', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const filter = fs.readFileSync(
+        path.join(__dirname, '..', 'templates', 'common', 'filters', 'prisma-exception.filter.ts'),
+        'utf8',
+    );
+    assert.ok(filter.includes(`from '${TEMPLATE_CLIENT_IMPORT}'`));
+    assert.ok(!filter.includes('@prisma/client'));
+});
+
+test('prismaFilter: resolveClientImport maps root and src layouts', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nc-client-'));
+    assert.deepEqual(resolveClientImport(root, '../generated/prisma'), {
+        importPath: TEMPLATE_CLIENT_IMPORT,
+        generated: false,
+    });
+    fs.mkdirSync(path.join(root, 'src', 'generated', 'prisma'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'generated', 'prisma', 'client.ts'), '');
+    assert.deepEqual(resolveClientImport(root, '../src/generated/prisma'), {
+        importPath: '../../generated/prisma/client.js',
+        generated: true,
+    });
 });
 
 test('prismaFilter: wrapValidationOptions nests joi options into libraryOptions', () => {

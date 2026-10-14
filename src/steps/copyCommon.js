@@ -3,7 +3,13 @@ const path = require('path');
 const fsHelpers = require('../utils/fsHelpers');
 const ui = require('../ui/output');
 const { rel } = require('./helpers');
-const { resolveClientImport, rewriteFilterImport, wrapValidationOptions } = require('../transforms/prismaFilter');
+const {
+    resolveClientImport,
+    rewriteFilterImport,
+    wrapValidationOptions,
+    TEMPLATE_CLIENT_IMPORT,
+    LEGACY_CLIENT_IMPORT,
+} = require('../transforms/prismaFilter');
 
 const FILTER_REL = path.join('filters', 'prisma-exception.filter.ts');
 const CONFIG_MODULE_REL = path.join('config', 'app-config.module.ts');
@@ -62,21 +68,25 @@ module.exports = {
             }
         }
 
-        // New `prisma-client` generator: the Prisma namespace lives in the
-        // generated client, not in @prisma/client. Point the filter at it.
-        if (ctx.hasPrisma && ctx.prismaClientOutput) {
+        // The template imports Prisma from generated/prisma at the project root
+        // (decision I16). Point it at wherever this project's client lives.
+        if (ctx.hasPrisma && data.created.includes(FILTER_REL)) {
             const filterPath = path.join(ctx.targetDir, FILTER_REL);
             const filterSource = await fsHelpers.readFile(filterPath);
-            const importPath = resolveClientImport(ctx.projectRoot, ctx.prismaClientOutput);
+            let importPath = LEGACY_CLIENT_IMPORT;
+            if (ctx.prismaClientOutput) {
+                const resolved = resolveClientImport(ctx.projectRoot, ctx.prismaClientOutput);
+                importPath = resolved.importPath;
+                if (!resolved.generated) {
+                    ui.warn('Prisma client not generated yet. Run "npx prisma generate" before building.');
+                }
+            }
 
-            if (importPath === null) {
-                ui.warn('Prisma client not generated yet — run "npx prisma generate", then fix the import in prisma-exception.filter.ts manually.');
-            } else {
+            if (importPath !== TEMPLATE_CLIENT_IMPORT) {
                 const patched = rewriteFilterImport(filterSource, importPath);
                 if (patched) {
                     await fsHelpers.writeFile(filterPath, patched);
-                    ui.success(`PrismaExceptionFilter import rewritten to "${importPath}" (new prisma-client generator detected).`);
-                    files.push({ kind: 'modify', path: rel(ctx, filterPath) });
+                    ui.success(`PrismaExceptionFilter imports Prisma from "${importPath}".`);
                 }
             }
         }

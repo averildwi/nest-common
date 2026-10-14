@@ -3,45 +3,82 @@ function escapeForSingleQuoteString(value) {
     return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-const COMMON_IMPORTS = [
-    "import { createValidationPipe } from './common/pipes/validation.pipe.config.js';",
-    "import { TransformInterceptor } from './common/interceptors/transform.interceptor.js';",
-    "import { LoggerInterceptor } from './common/interceptors/logger.interceptor.js';",
-    "import { GlobalExceptionFilter } from './common/filters/global-exception.filter.js';",
-];
+/**
+ * True when the file already writes relative imports with a `.js` extension
+ * (ESM / nodenext style). Injected imports follow the file's own style so a
+ * Nest 11 CommonJS project does not end up with mixed `./x` and `./x.js`.
+ */
+function usesJsExtension(source) {
+    return /from\s+['"]\.{1,2}\/[^'"]+\.js['"]/.test(source);
+}
+
+function relImport(path, js) {
+    return js ? `${path}.js` : path;
+}
 
 /**
  * Builds the import block that is inserted after the last import in main.ts.
  * PrismaExceptionFilter is only referenced when the project actually has
  * Prisma, and the Swagger import only when it isn't imported yet.
  */
-function buildImportBlock({ useSwagger, hasPrisma, needsSwaggerLib }) {
-    const lines = [...COMMON_IMPORTS];
-    if (hasPrisma) {
-        lines.push("import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter.js';");
+function buildImportBlock({ useSwagger, hasPrisma, needsSwaggerLib, js = true, source = '' }) {
+    const lines = [];
+    if (!/\bConfigService\b/.test(source)) {
+        lines.push("import { ConfigService } from '@nestjs/config';");
+    }
+    if (!/\bNestExpressApplication\b/.test(source)) {
+        lines.push("import { NestExpressApplication } from '@nestjs/platform-express';");
     }
     if (useSwagger && needsSwaggerLib) {
         lines.push("import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';");
     }
+    lines.push(
+        `import { createValidationPipe } from '${relImport('./common/pipes/validation.pipe.config', js)}';`,
+        `import { TransformInterceptor } from '${relImport('./common/interceptors/transform.interceptor', js)}';`,
+        `import { LoggerInterceptor } from '${relImport('./common/interceptors/logger.interceptor', js)}';`,
+        `import { GlobalExceptionFilter } from '${relImport('./common/filters/global-exception.filter', js)}';`,
+    );
+    if (hasPrisma) {
+        lines.push(`import { PrismaExceptionFilter } from '${relImport('./common/filters/prisma-exception.filter', js)}';`);
+    }
     return lines.join('\n');
 }
 
-/** Builds the CORS/pipes/interceptors/filters block injected into bootstrap(). */
+/**
+ * Builds the block injected right after the app is created, in the order of
+ * the standard (nest-architecture rule 10): trust proxy, prefix, CORS, pipes,
+ * interceptors, filters.
+ */
 function buildCorsBlock({ hasPrisma = false } = {}) {
     const filters = hasPrisma
         ? 'new GlobalExceptionFilter(), new PrismaExceptionFilter()'
         : 'new GlobalExceptionFilter()';
     return [
-        `  // ── Injected by @averildwi/nest-common ──`,
-        `  const allowedOrigins = process.env.FRONTEND_URL`,
-        `    ? process.env.FRONTEND_URL.split(',')`,
-        `    : '*';`,
+        `  // Injected by @averildwi/nest-common`,
+        `  const config = app.get(ConfigService);`,
+        ``,
+        `  // Behind a proxy, req.ip is the proxy unless we trust it. Trust the exact`,
+        `  // hop count (TRUST_PROXY_HOPS), never \`true\`.`,
+        `  app.set('trust proxy', config.getOrThrow<number>('TRUST_PROXY_HOPS'));`,
+        `  app.setGlobalPrefix('api');`,
+        ``,
+        `  // Empty FRONTEND_URL means no cross-origin access (never a wildcard).`,
+        `  const allowedOrigins = config`,
+        `    .getOrThrow<string>('FRONTEND_URL')`,
+        `    .split(',')`,
+        `    .map((origin) => origin.trim())`,
+        `    .filter(Boolean);`,
         `  app.enableCors({`,
         `    origin: allowedOrigins,`,
         `    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],`,
         `  });`,
+        ``,
         `  app.useGlobalPipes(createValidationPipe());`,
-        `  app.useGlobalInterceptors(new LoggerInterceptor(), new TransformInterceptor());`,
+        `  app.useGlobalInterceptors(`,
+        `    new LoggerInterceptor(),`,
+        `    new TransformInterceptor(),`,
+        `  );`,
+        `  // Nest tries the LAST registered filter first, so the catch-all goes first.`,
         `  app.useGlobalFilters(${filters});`,
     ].join('\n');
 }
@@ -54,7 +91,7 @@ function buildSwaggerBlock({ title, description, version, docsPath }) {
     const p = escapeForSingleQuoteString(docsPath);
     return [
         ``,
-        `  const config = new DocumentBuilder()`,
+        `  const swaggerConfig = new DocumentBuilder()`,
         `    .setTitle('${t}')`,
         `    .setDescription('${d}')`,
         `    .setVersion('${v}')`,
@@ -68,7 +105,7 @@ function buildSwaggerBlock({ title, description, version, docsPath }) {
         `      'access-token',`,
         `    )`,
         `    .build();`,
-        `  const document = SwaggerModule.createDocument(app, config);`,
+        `  const document = SwaggerModule.createDocument(app, swaggerConfig);`,
         `  SwaggerModule.setup('${p}', app, document, {`,
         `    swaggerOptions: { persistAuthorization: true },`,
         `  });`,
@@ -76,15 +113,20 @@ function buildSwaggerBlock({ title, description, version, docsPath }) {
 }
 
 const APP_CREATION = /(const\s+app\s*=\s*await\s+NestFactory\.create(?:<[^>]*>)?\(AppModule\);)/;
+const PLAIN_CREATION = /NestFactory\.create\(AppModule\)/;
+const FLOATING_BOOTSTRAP = /^bootstrap\(\);?[ \t]*$/m;
 
 /**
  * Applies the prepared pieces to a main.ts source. Returns null when there
  * is nothing to do (everything already present / nothing applicable).
+ * Works on LF internally and restores the file's own line endings.
  */
 function applyToMain(source, { importBlock, injectionCode }) {
-    let out = source;
+    const eol = source.includes('\r\n') ? '\r\n' : '\n';
+    const original = source.replace(/\r\n/g, '\n');
+    let out = original;
 
-    if (importBlock && !out.includes("from './common/pipes/validation.pipe.config'")) {
+    if (importBlock && !/validation\.pipe\.config/.test(out)) {
         const importRegex = /^import\s[^;]*;/gm;
         let lastMatch = null;
         let match;
@@ -97,17 +139,29 @@ function applyToMain(source, { importBlock, injectionCode }) {
             : `${block}${out}`;
     }
 
+    let needsManualInjection;
     if (injectionCode) {
-        if (!APP_CREATION.test(out)) return { source: out, needsManualInjection: injectionCode };
-        out = out.replace(APP_CREATION, `$1\n${injectionCode}`);
+        if (APP_CREATION.test(out)) {
+            // app.set('trust proxy') is only typed on the Express adapter.
+            out = out.replace(PLAIN_CREATION, 'NestFactory.create<NestExpressApplication>(AppModule)');
+            out = out.replace(APP_CREATION, `$1\n${injectionCode}`);
+        } else {
+            needsManualInjection = injectionCode;
+        }
     }
 
-    if (out === source) return null;
-    return { source: out };
+    // `bootstrap();` at the top level is a floating promise (no-floating-promises).
+    out = out.replace(FLOATING_BOOTSTRAP, 'void bootstrap();');
+
+    if (out === original && !needsManualInjection) return null;
+    const result = { source: out.replace(/\n/g, eol) };
+    if (needsManualInjection) result.needsManualInjection = needsManualInjection;
+    return result;
 }
 
 module.exports = {
     escapeForSingleQuoteString,
+    usesJsExtension,
     buildImportBlock,
     buildCorsBlock,
     buildSwaggerBlock,
