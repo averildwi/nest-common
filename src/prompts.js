@@ -75,4 +75,26 @@ async function confirmPlan() {
     }
 }
 
-module.exports = { resolveAnswers, confirmPlan, SWAGGER_DEFAULTS };
+/** Asks which workspace package to configure when several NestJS apps exist. */
+async function pickApp(candidates) {
+    const inquirer = await loadInquirer();
+    try {
+        const { app } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'app',
+                message: 'Which NestJS application should be configured?',
+                choices: candidates.map((candidate) => ({
+                    name: `${candidate.name} (${candidate.rel})`,
+                    value: candidate.dir,
+                })),
+            },
+        ]);
+        return app;
+    } catch (err) {
+        if (isPromptAbort(err)) throw new CancelledError();
+        throw err;
+    }
+}
+
+module.exports = { resolveAnswers, confirmPlan, pickApp, SWAGGER_DEFAULTS };

@@ -8,7 +8,7 @@ const steps = require('./steps');
 
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates', 'common');
 
-function buildContext({ projectRoot, pkgJson, answers, facts, packageManager, install }) {
+function buildContext({ projectRoot, pkgJson, answers, facts, packageManager, install, lint, workspace }) {
     const paths = {
         targetDir: path.join(projectRoot, 'src', 'common'),
         appModule: path.join(projectRoot, 'src', 'app.module.ts'),
@@ -18,18 +18,27 @@ function buildContext({ projectRoot, pkgJson, answers, facts, packageManager, in
         pkgJsonPath: path.join(projectRoot, 'package.json'),
     };
 
+    const workspaceRoot = workspace && workspace.workspaceRoot ? workspace.workspaceRoot : null;
+    const isWorkspaceMember = Boolean(workspace && workspace.isWorkspace && workspace.isMember && workspace.appDir);
+
     return {
         projectRoot,
         pkgJson,
         answers,
         install,
+        lint: lint ?? true,
         nestMajor: facts.nestMajor,
         configMajor: facts.configMajor,
         hasPrisma: facts.hasPrisma,
         prismaClientOutput: facts.prismaClientOutput,
-        dependencies: resolveDependencies(facts.nestMajor),
+        dependencies: resolveDependencies(facts.nestMajor, { swagger: answers.useSwagger }),
         pm: getPackageManager(packageManager.name),
         pmSource: packageManager.source,
+        workspaceRoot,
+        packageName: workspace ? workspace.packageName : null,
+        appRel: workspace ? workspace.appRel : null,
+        isWorkspaceMember,
+        turbo: Boolean(workspace && workspace.turbo),
         templatesDir: TEMPLATES_DIR,
         paths,
         ...paths,
@@ -60,8 +69,12 @@ const KIND_STYLE = {
 
 function printPlan(ctx, plan, { dryRun }) {
     ui.section('Configuration');
-    ui.keyValues([
-        ['Project', path.basename(ctx.projectRoot)],
+    const projectLabel =
+        ctx.isWorkspaceMember && ctx.packageName
+            ? `${ctx.packageName}${ctx.appRel ? c.gray(` (${ctx.appRel})`) : ''}`
+            : path.basename(ctx.projectRoot);
+    const rows = [
+        ['Project', projectLabel],
         ['Nest', ctx.nestMajor ? `v${ctx.nestMajor} detected` : c.gray('version not detected')],
         [
             'Swagger',
@@ -70,7 +83,9 @@ function printPlan(ctx, plan, { dryRun }) {
                 : 'disabled',
         ],
         ['Package manager', `${ctx.pm.name} ${c.gray(`(${ctx.pmSource})`)}`],
-    ]);
+    ];
+    if (ctx.isWorkspaceMember) rows.push(['Workspace root', ctx.workspaceRoot]);
+    ui.keyValues(rows);
 
     ui.section(dryRun ? 'Planned changes (dry run, nothing will be modified)' : 'Planned changes');
     for (const { entries } of plan) {
@@ -141,6 +156,21 @@ function printSummary(ctx, summary) {
     }
 
     printNextSteps(ctx);
+    printTurboChecklist(ctx);
+}
+
+function printTurboChecklist(ctx) {
+    if (!ctx.turbo || !ctx.isWorkspaceMember) return;
+
+    const filter = ctx.packageName || ctx.appRel;
+    ui.section('Turbo checklist');
+    ui.out(
+        `    ${c.cyan('1.')} If you want workspace-wide caching of this app's lint, add a ${c.bold('lint')} task to ${c.bold('turbo.json')}.`,
+    );
+    ui.out(`    ${c.cyan('2.')} Run tasks for this app from the workspace root:`);
+    ui.out(`       ${c.cyan(`turbo run build --filter ${filter}`)}`);
+    ui.out(`    ${c.gray('turbo.json was not modified.')}`);
+    ui.out();
 }
 
 function printNextSteps(ctx) {

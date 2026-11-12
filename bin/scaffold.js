@@ -6,8 +6,8 @@ const { CliError, CancelledError } = require('../src/errors');
 const { setColorEnabled } = require('../src/ui/colors');
 const ui = require('../src/ui/output');
 const { runPreflight } = require('../src/preflight');
-const { resolveAnswers, confirmPlan } = require('../src/prompts');
-const { detectPackageManager } = require('../src/utils/packageManager');
+const { resolveAnswers, confirmPlan, pickApp } = require('../src/prompts');
+const { resolveProject } = require('../src/utils/workspace');
 const registry = require('../src/config/registry');
 const runner = require('../src/runner');
 
@@ -24,13 +24,52 @@ async function main(argv) {
         return;
     }
 
-    const projectRoot = process.cwd();
     const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY) && !options.yes;
 
     ui.header('nest-common', `v${pkg.version}`);
 
+    // Resolve the app before anything else: in a workspace the current folder
+    // may be the repository root, not the NestJS package.
+    const project = resolveProject({
+        cwd: process.cwd(),
+        cwdFlag: options.cwd,
+        appFlag: options.app,
+        pmFlag: options.packageManager,
+    });
+
+    if (project.ambiguous) {
+        if (interactive) {
+            project.appDir = await pickApp(project.candidates);
+            const chosen = project.candidates.find((candidate) => candidate.dir === project.appDir);
+            project.packageName = chosen ? chosen.name : project.packageName;
+            project.appRel = chosen ? chosen.rel : project.appRel;
+            project.isMember = true;
+            project.ambiguous = false;
+        } else {
+            throw new CliError('Multiple NestJS applications found in this workspace.', {
+                hints: [
+                    `Candidates: ${project.candidates.map((c) => `${c.name} (${c.rel})`).join(', ')}`,
+                    'Choose one with --app <package name> or --cwd <path>.',
+                ],
+                exitCode: 2,
+            });
+        }
+    } else if (project.isWorkspace && !project.appDir) {
+        throw new CliError('No NestJS application found in this workspace.', {
+            hints: [
+                project.globs.length
+                    ? `Workspace packages: ${project.globs.join(', ')}`
+                    : `Workspace root: ${project.workspaceRoot}`,
+                'Point --cwd at the app directory, or add @nestjs/core + src/ to the package you want to configure.',
+            ],
+            exitCode: 2,
+        });
+    }
+
+    const projectRoot = project.appDir || project.baseDir;
+
     const { pkgJson } = runPreflight(projectRoot, runner.templatesDir);
-    const facts = await registry.detectFacts(projectRoot, pkgJson);
+    const facts = await registry.detectFacts(projectRoot, pkgJson, { workspaceRoot: project.workspaceRoot });
 
     // Answers first: swagger prompts only make sense once preflight passed.
     const answers = await resolveAnswers(options, { interactive });
@@ -40,8 +79,10 @@ async function main(argv) {
         pkgJson,
         answers,
         facts,
-        packageManager: detectPackageManager(projectRoot, options.packageManager),
+        packageManager: project.pm,
         install: options.install ?? true,
+        lint: options.lint,
+        workspace: project,
     });
 
     const plan = await runner.buildPlan(ctx);

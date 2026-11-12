@@ -1,9 +1,19 @@
 // Fast unit checks for the pure logic. Run: npm test
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { test } = require('node:test');
 
-const { parseCliArgs } = require('../src/cli');
-const { resolveDependencies, readMajor, NEST_DEPENDENCY_MATRIX } = require('../src/config/registry');
+const { parseCliArgs, helpText } = require('../src/cli');
+const {
+    resolveDependencies,
+    readMajor,
+    NEST_DEPENDENCY_MATRIX,
+    detectNestMajor,
+    detectConfigMajor,
+    detectPrisma,
+} = require('../src/config/registry');
 const { register, isRegistered } = require('../src/transforms/appModule');
 const {
     buildImportBlock,
@@ -323,4 +333,101 @@ test('updateEnv: envBlueprint generates a random hex JWT_SECRET', () => {
     assert.equal(blueprint.JWT_SECRET, 'a'.repeat(64));
     assert.equal(blueprint.PORT, '3000');
     assert.equal(blueprint.JWT_EXPIRES_IN, '7d');
+});
+
+// -- CLI workspace flags -------------------------------------------------
+
+test('argv: workspace flags are parsed', () => {
+    const o = parseCliArgs(['--cwd', 'apps/api', '--app', '@repo/api', '--pm', 'PNPM', '--no-install', '--no-lint', '--swagger']);
+    assert.equal(o.cwd, 'apps/api');
+    assert.equal(o.app, '@repo/api');
+    assert.equal(o.packageManager, 'pnpm');
+    assert.equal(o.install, false);
+    assert.equal(o.lint, false);
+    assert.equal(o.useSwagger, true);
+});
+
+test('help text documents the workspace flags', () => {
+    const text = helpText({ name: '@averildwi/nest-common', version: '9.9.9' });
+    for (const flag of ['--cwd', '--app', '--pm', '--no-install', '--no-lint', '--no-swagger', '--yes']) {
+        assert.ok(text.includes(flag), `missing ${flag}`);
+    }
+    assert.ok(text.includes('@averildwi/nest-common v9.9.9'));
+});
+
+// -- registry version detection -----------------------------------------
+
+function tmp(t) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nest-common-unit-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    return dir;
+}
+
+function writeJsonAt(root, rel, value) {
+    const file = path.join(root, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+test('registry: hoisted @nestjs/common is detected from the app directory', async (t) => {
+    const root = tmp(t);
+    const app = path.join(root, 'apps', 'api');
+    fs.mkdirSync(app, { recursive: true });
+    writeJsonAt(root, 'node_modules/@nestjs/common/package.json', { name: '@nestjs/common', version: '10.4.15' });
+
+    assert.equal(await detectNestMajor(app, { dependencies: { '@nestjs/common': '^11.0.0' } }, root), 10);
+});
+
+test('registry: nest major falls back to the app, then the workspace root', async (t) => {
+    const root = tmp(t);
+    const app = path.join(root, 'apps', 'api');
+    fs.mkdirSync(app, { recursive: true });
+
+    assert.equal(await detectNestMajor(app, { dependencies: { '@nestjs/common': '^11.0.0' } }, root), 11);
+    assert.equal(await detectNestMajor(app, {}, root), null);
+
+    writeJsonAt(root, 'package.json', { name: 'repo', devDependencies: { '@nestjs/common': '~10.3.0' } });
+    assert.equal(await detectNestMajor(app, {}, root), 10);
+});
+
+test('registry: pnpm catalog specs resolve the Nest major', async (t) => {
+    const root = tmp(t);
+    const app = path.join(root, 'apps', 'api');
+    fs.mkdirSync(app, { recursive: true });
+
+    fs.writeFileSync(
+        path.join(root, 'pnpm-workspace.yaml'),
+        "packages:\n  - 'apps/*'\ncatalog:\n  '@nestjs/common': ^11.0.0\n",
+    );
+    assert.equal(await detectNestMajor(app, { dependencies: { '@nestjs/common': 'catalog:' } }, root), 11);
+
+    fs.writeFileSync(
+        path.join(root, 'pnpm-workspace.yaml'),
+        "packages:\n  - 'apps/*'\ncatalogs:\n  nest10:\n    '@nestjs/common': '~10.4.0'\n",
+    );
+    assert.equal(await detectNestMajor(app, { dependencies: { '@nestjs/common': 'catalog:nest10' } }, root), 10);
+});
+
+test('registry: config major reads the installed package then the matrix', async (t) => {
+    const root = tmp(t);
+    assert.equal(await detectConfigMajor(root, {}, 11, null), 4);
+    assert.equal(await detectConfigMajor(root, {}, 10, null), 3);
+
+    writeJsonAt(root, 'node_modules/@nestjs/config/package.json', { name: '@nestjs/config', version: '12.0.1' });
+    assert.equal(await detectConfigMajor(root, {}, 11, null), 12);
+});
+
+test('registry: detectPrisma finds a hoisted @prisma/client', async (t) => {
+    const root = tmp(t);
+    const app = path.join(root, 'apps', 'api');
+    fs.mkdirSync(app, { recursive: true });
+
+    assert.equal(await detectPrisma(app), false);
+    writeJsonAt(root, 'node_modules/@prisma/client/package.json', { name: '@prisma/client', version: '7.0.0' });
+    assert.equal(await detectPrisma(app), true);
+});
+
+test('registry: resolveDependencies drops Swagger when disabled', () => {
+    assert.ok(resolveDependencies(11, { swagger: false }).every((s) => !s.startsWith('@nestjs/swagger')));
+    assert.ok(resolveDependencies(11, { swagger: true }).some((s) => s.startsWith('@nestjs/swagger')));
 });

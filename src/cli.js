@@ -1,22 +1,25 @@
 const { parseArgs } = require('util');
 
 const { CliError } = require('./errors');
+const { PACKAGE_MANAGERS } = require('./utils/packageManager');
 
 const OPTIONS = {
     help: { type: 'boolean', short: 'h' },
     version: { type: 'boolean', short: 'v' },
     yes: { type: 'boolean', short: 'y' },
     'dry-run': { type: 'boolean' },
+    cwd: { type: 'string' },
+    app: { type: 'string' },
     pm: { type: 'string' },
     swagger: { type: 'boolean' },
     'no-swagger': { type: 'boolean' },
+    install: { type: 'boolean' },
     'no-install': { type: 'boolean' },
+    lint: { type: 'boolean' },
+    'no-lint': { type: 'boolean' },
     color: { type: 'boolean' },
     'no-color': { type: 'boolean' },
 };
-
-/** Accepts common spellings so `--pm pnpm` just works. */
-const PM_ALIASES = { npm: 'npm', pnpm: 'pnpm', yarn: 'yarn', bun: 'bun' };
 
 function pickBoolean(values, name) {
     if (values[`no-${name}`]) return false;
@@ -46,21 +49,24 @@ function parseCliArgs(argv = process.argv.slice(2)) {
         version: Boolean(v.version),
         yes: Boolean(v.yes),
         dryRun: Boolean(v['dry-run']),
+        cwd: v.cwd,
+        app: v.app,
         packageManager: undefined,
         useSwagger: pickBoolean(v, 'swagger'),
         install: pickBoolean(v, 'install'),
+        lint: pickBoolean(v, 'lint'),
         color: pickBoolean(v, 'color'),
     };
 
     if (v.pm !== undefined) {
         const pm = v.pm.toLowerCase();
-        if (!PM_ALIASES[pm]) {
+        if (!PACKAGE_MANAGERS[pm]) {
             throw new CliError(`Unknown package manager "${v.pm}".`, {
-                hints: [`Supported values: ${Object.keys(PM_ALIASES).join(', ')}.`],
+                hints: [`Supported values: ${Object.keys(PACKAGE_MANAGERS).join(', ')}.`],
                 exitCode: 2,
             });
         }
-        options.packageManager = PM_ALIASES[pm];
+        options.packageManager = pm;
     }
 
     return options;
@@ -76,9 +82,13 @@ function helpText(pkg) {
     $ npx ${pkg.name} [options]
 
   Options
-    --no-swagger       Skip the Swagger API documentation setup
+    --cwd <path>       Run against this app directory (default: current directory)
+    --app <name>       Pick a workspace package by name or relative path
     --pm <name>        Package manager: npm | pnpm | yarn | bun (default: auto-detect)
+    --swagger          Enable Swagger setup without asking
+    --no-swagger       Skip the Swagger API documentation setup
     --no-install       Skip installing dependencies (only write files)
+    --no-lint          Skip running the lint script
     -y, --yes          Accept defaults and skip all prompts
     --dry-run          Show what would change without touching anything
     --no-color         Disable coloured output
@@ -89,6 +99,7 @@ function helpText(pkg) {
     $ npx ${pkg.name}
     $ npx ${pkg.name} --no-swagger
     $ npx ${pkg.name} --yes --dry-run
+    $ npx ${pkg.name} --app @repo/api --pm pnpm
 `;
 }
 

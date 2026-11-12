@@ -26,9 +26,12 @@ npx @averildwi/nest-common
 
 | Option | Description |
 |---|---|
-| `--no-swagger` | Skip the Swagger API documentation setup |
+| `--cwd <path>` | Run against this app directory (default: current directory) |
+| `--app <name>` | Pick a workspace package by name or relative path |
+| `--swagger` / `--no-swagger` | Enable / skip the Swagger API documentation setup |
 | `--pm <name>` | `npm`, `pnpm`, `yarn` or `bun` (default: auto-detect) |
 | `--no-install` | Only write files, don't install packages |
+| `--no-lint` | Don't run the project's `lint` script |
 | `-y, --yes` | Accept defaults and skip all prompts |
 | `--dry-run` | Show what would change without touching anything |
 | `--no-color` | Disable coloured output (`NO_COLOR` is respected too) |
@@ -90,6 +93,36 @@ npx @averildwi/nest-common
 
 Commit after each tool, on its own.
 
+### Monorepo / Turborepo
+
+`nest-common` works in npm/pnpm/yarn/bun workspaces and Turborepo repositories.
+Run it from the app directory or from the workspace root:
+
+```bash
+# from the workspace root: the only NestJS app is picked automatically
+npx @averildwi/nest-common
+
+# choose a package when several apps exist
+npx @averildwi/nest-common --app @repo/api
+npx @averildwi/nest-common --cwd apps/api --pm pnpm
+```
+
+- The app, package manager and lockfile are resolved before anything is
+  touched; dependencies are installed with the workspace-aware command
+  (`npm install --workspace`, `pnpm --filter add`, `yarn workspace add`, or a
+  plain `bun add` in the app directory).
+- Several NestJS apps with no TTY: the CLI exits with code 2 instead of
+  guessing. Add `--app` or `--cwd`.
+- `--pm` always wins over the lockfile and `packageManager` field.
+- `turbo.json` is never modified; a short Turbo checklist is printed at the
+  end when one is detected.
+- Hoisted `@nestjs/common`/`@nestjs/config` versions and pnpm `catalog:`
+  ranges are understood, so `--no-install` still pins the right majors.
+- **Yarn PnP is not supported yet** (it has no `node_modules`): the CLI fails
+  with an explicit message. Switch to `nodeLinker: node-modules`.
+
+See [`docs/monorepo.md`](docs/monorepo.md) for the full workspace contract.
+
 ### Compatibility notes
 
 - **Nest 11 (CommonJS) is the tested target.** Nest 10 and 12 get matching
@@ -113,26 +146,27 @@ that have nothing to do are dropped from the plan, so the `[n/total]` counter
 reflects only the steps that actually run:
 
 ```
-[1/*] Copy the common boilerplate into src/common
+[1/*] Install the ecosystem dependencies (version-pinned to your Nest major)
+      (runs first, so a failed install leaves no files behind)
+   │
+   ▼
+[2/*] Copy the common boilerplate into src/common
       (existing files are never overwritten; Prisma filter skipped without Prisma)
    │
    ▼
-[2/*] Register AppConfigModule, HashingModule, ThrottlerModule and the
+[3/*] Register AppConfigModule, HashingModule, ThrottlerModule and the
       global ThrottlerGuard (APP_GUARD) in src/app.module.ts
    │
    ▼
-[3/*] Wire src/main.ts — trust proxy, api prefix, CORS, global
+[4/*] Wire src/main.ts — trust proxy, api prefix, CORS, global
       pipes/interceptors/filters and (optional) Swagger docs
    │
    ▼
-[4/*] Generate/patch .env.example with the required Joi variables
+[5/*] Generate/patch .env.example with the required Joi variables
       (JWT_SECRET is randomly generated per project)
    │
    ▼
-[5/*] Install the ecosystem dependencies (version-pinned to your Nest major)
-   │
-   ▼
-[6/*] Auto-format the injected code with "npm run lint" (when configured)
+[6/*] Auto-format the injected code with the project's lint script (when configured)
 ```
 
 The CLI is **idempotent** — running it again on a project that already has

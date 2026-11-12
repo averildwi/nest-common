@@ -1,6 +1,8 @@
 const path = require('path');
 
 const fsHelpers = require('../utils/fsHelpers');
+const { findPackageFile } = require('../utils/project');
+const { readPnpmCatalog } = require('../utils/workspace');
 
 /**
  * Peer-compatible ecosystem versions per NestJS major.
@@ -15,18 +17,19 @@ const NEST_DEPENDENCY_MATRIX = {
     default: { config: 'latest', passport: 'latest', swagger: 'latest', throttler: 'latest' },
 };
 
-/** Runtime deps installed by the install step, derived from the detected Nest major. */
-function resolveDependencies(nestMajor) {
+/**
+ * Runtime deps installed by the install step, derived from the detected Nest
+ * major. @nestjs/swagger is only installed when Swagger setup is enabled.
+ */
+function resolveDependencies(nestMajor, { swagger = true } = {}) {
     const matrix = NEST_DEPENDENCY_MATRIX[nestMajor] || NEST_DEPENDENCY_MATRIX.default;
-    return [
+    const deps = [
         `@nestjs/config@${matrix.config}`,
         `@nestjs/passport@${matrix.passport}`,
-        `@nestjs/swagger@${matrix.swagger}`,
-        `@nestjs/throttler@${matrix.throttler}`,
-        'class-validator',
-        'class-transformer',
-        'joi',
     ];
+    if (swagger) deps.push(`@nestjs/swagger@${matrix.swagger}`);
+    deps.push(`@nestjs/throttler@${matrix.throttler}`, 'class-validator', 'class-transformer', 'joi');
+    return deps;
 }
 
 function readMajor(range) {
@@ -34,24 +37,68 @@ function readMajor(range) {
     return match ? Number(match[1]) : null;
 }
 
-async function readInstalledMajor(projectRoot, name) {
+/**
+ * Reads the major of an installed package by walking up from `startDir`, so
+ * packages hoisted to the workspace root by npm or pnpm are still found.
+ */
+async function readInstalledMajor(startDir, name) {
+    const pkgPath = findPackageFile(startDir, name);
+    if (!pkgPath) return null;
     try {
-        const installedPath = path.join(projectRoot, 'node_modules', ...name.split('/'), 'package.json');
-        if (await fsHelpers.exists(installedPath)) {
-            return readMajor(require(installedPath).version);
-        }
+        return readMajor(require(pkgPath).version);
     } catch (err) {
-        // fall through to the declared range
+        return null;
     }
-    return null;
+}
+
+function declaredRange(pkgJson, name) {
+    return (
+        (pkgJson.dependencies && pkgJson.dependencies[name]) ||
+        (pkgJson.devDependencies && pkgJson.devDependencies[name]) ||
+        (pkgJson.peerDependencies && pkgJson.peerDependencies[name])
+    );
 }
 
 async function readDeclaredMajor(pkgJson, name) {
-    const declared =
-        (pkgJson.dependencies && pkgJson.dependencies[name]) ||
-        (pkgJson.devDependencies && pkgJson.devDependencies[name]) ||
-        (pkgJson.peerDependencies && pkgJson.peerDependencies[name]);
-    return readMajor(declared);
+    return readMajor(declaredRange(pkgJson, name));
+}
+
+/** Reads the major from the workspace-root package.json, if it declares it. */
+async function readWorkspaceDeclaredMajor(workspaceRoot, name) {
+    if (!workspaceRoot) return null;
+    const pkgPath = path.join(workspaceRoot, 'package.json');
+    if (!fsHelpers.existsSync(pkgPath)) return null;
+    try {
+        return readMajor(declaredRange(require(pkgPath), name));
+    } catch (err) {
+        return null;
+    }
+}
+
+/**
+ * Resolves a pnpm `catalog:` / `catalog:<name>` range from
+ * pnpm-workspace.yaml, so the Nest major is known even before install.
+ */
+function readCatalogRange(pkgJson, workspaceRoot, name) {
+    if (!workspaceRoot) return null;
+    const declared = declaredRange(pkgJson || {}, name);
+    if (!declared) return null;
+
+    const match = String(declared).match(/^catalog:(.*)$/);
+    if (!match) return null;
+
+    const catalogs = readPnpmCatalog(workspaceRoot);
+    const table = match[1].trim() ? catalogs[match[1].trim()] : catalogs.default;
+    return (table && table[name]) || null;
+}
+
+async function detectNestMajor(projectRoot, pkgJson, workspaceRoot) {
+    return (
+        (await readInstalledMajor(projectRoot, '@nestjs/common')) ??
+        (await readDeclaredMajor(pkgJson, '@nestjs/common')) ??
+        readMajor(readCatalogRange(pkgJson, workspaceRoot, '@nestjs/common')) ??
+        (await readWorkspaceDeclaredMajor(workspaceRoot, '@nestjs/common'))
+    );
 }
 
 /**
@@ -60,18 +107,23 @@ async function readDeclaredMajor(pkgJson, name) {
  * options (Joi's abortEarly/allowUnknown) must be nested inside
  * `libraryOptions`. Older majors (3/4) accept them directly.
  */
-async function detectConfigMajor(projectRoot, pkgJson, nestMajor) {
+async function detectConfigMajor(projectRoot, pkgJson, nestMajor, workspaceRoot) {
     return (
         (await readInstalledMajor(projectRoot, '@nestjs/config')) ??
         (await readDeclaredMajor(pkgJson, '@nestjs/config')) ??
+        readMajor(readCatalogRange(pkgJson, workspaceRoot, '@nestjs/config')) ??
+        (await readWorkspaceDeclaredMajor(workspaceRoot, '@nestjs/config')) ??
         readMajor(NEST_DEPENDENCY_MATRIX[nestMajor]?.config)
     );
 }
 
-/** Prisma is considered present when a schema exists or @prisma/client is installed. */
+/**
+ * Prisma is considered present when a schema exists in the app or when
+ * @prisma/client is installed (possibly hoisted to the workspace root).
+ */
 async function detectPrisma(projectRoot) {
     if (await fsHelpers.exists(path.join(projectRoot, 'prisma', 'schema.prisma'))) return true;
-    return fsHelpers.exists(path.join(projectRoot, 'node_modules', '@prisma', 'client'));
+    return Boolean(findPackageFile(projectRoot, '@prisma/client'));
 }
 
 /**
@@ -102,12 +154,9 @@ async function detectPrismaClientOutput(projectRoot) {
 }
 
 /** Aggregates everything the steps need to know about the target project. */
-async function detectFacts(projectRoot, pkgJson) {
-    const nestMajor =
-        (await readInstalledMajor(projectRoot, '@nestjs/common')) ??
-        (await readDeclaredMajor(pkgJson, '@nestjs/common'));
-
-    const configMajor = await detectConfigMajor(projectRoot, pkgJson, nestMajor);
+async function detectFacts(projectRoot, pkgJson, { workspaceRoot } = {}) {
+    const nestMajor = await detectNestMajor(projectRoot, pkgJson, workspaceRoot);
+    const configMajor = await detectConfigMajor(projectRoot, pkgJson, nestMajor, workspaceRoot);
     const hasPrisma = await detectPrisma(projectRoot);
     const prismaClientOutput = hasPrisma ? await detectPrismaClientOutput(projectRoot) : null;
 
@@ -121,7 +170,9 @@ module.exports = {
     readMajor,
     readInstalledMajor,
     readDeclaredMajor,
+    detectNestMajor,
     detectConfigMajor,
     detectPrisma,
     detectPrismaClientOutput,
+    readCatalogRange,
 };

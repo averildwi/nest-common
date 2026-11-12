@@ -1,6 +1,6 @@
 {
   "name": "@averildwi/nest-common",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Automated generator to inject a complete common folder into NestJS",
   "main": "bin/scaffold.js",
   "bin": {
@@ -9,10 +9,12 @@
   "files": [
     "bin",
     "src",
-    "templates"
+    "templates",
+    "docs",
+    "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test test/unit.test.js test/workspace.test.js test/install.test.js test/package.test.js test/integration.test.js"
   },
   "keywords": [
     "nestjs",
@@ -26,6 +28,17 @@
   ],
   "author": "averildwi",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/averildwi/nest-common.git"
+  },
+  "bugs": {
+    "url": "https://github.com/averildwi/nest-common/issues"
+  },
+  "homepage": "https://github.com/averildwi/nest-common#readme",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "type": "commonjs",
   "dependencies": {
     "fs-extra": "^11.3.6",
