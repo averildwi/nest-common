@@ -89,6 +89,7 @@ npx @nestjs/cli@11 new my-app --strict
 cd my-app
 npx @averildwi/nest-prisma --db postgres     # client in generated/prisma (root)
 npx @averildwi/nest-common
+npx @averildwi/nest-cloudinary               # Cloudinary upload module
 ```
 
 Commit after each tool, on its own.

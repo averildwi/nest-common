@@ -6,6 +6,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-11-13
+
+### Changed
+
+- README: add `@averildwi/nest-cloudinary` to the recommended setup order.
+
 ## [3.1.0] - 2026-11-12
 
 ### Added
