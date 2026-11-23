@@ -206,7 +206,7 @@ automatically.
 
 ```typescript
 // src/config/env.schema.ts
-import * as Joi from 'joi';
+import Joi from 'joi';
 
 export const projectEnvSchema = Joi.object({
   CLOUDINARY_URL: Joi.string().uri().required(),

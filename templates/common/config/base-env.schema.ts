@@ -1,4 +1,4 @@
-import * as Joi from 'joi';
+import Joi from 'joi';
 
 export const baseEnvSchema = Joi.object({
   DATABASE_URL: Joi.string().required(),

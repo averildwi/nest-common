@@ -6,6 +6,14 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- ESM projects (`"type": "module"`, the Nest 12 default) failed at boot with
+  `Joi.string is not a function`: `base-env.schema.ts` used
+  `import * as Joi from 'joi'`, which in ESM is a namespace without the Joi
+  API. It now uses `import Joi from 'joi'`, which works in CommonJS and ESM
+  (`esModuleInterop` is on in every Nest template).
+
 ## [3.1.1] - 2026-11-13
 
 ### Changed

@@ -431,3 +431,14 @@ test('registry: resolveDependencies drops Swagger when disabled', () => {
     assert.ok(resolveDependencies(11, { swagger: false }).every((s) => !s.startsWith('@nestjs/swagger')));
     assert.ok(resolveDependencies(11, { swagger: true }).some((s) => s.startsWith('@nestjs/swagger')));
 });
+
+test('templates: joi is a default import, so it also works in ESM projects', () => {
+    // joi ships CommonJS; in ESM `import * as Joi` gives a namespace without
+    // .object/.string and the app fails at boot ("Joi.string is not a function").
+    const dir = path.join(__dirname, '..', 'templates', 'common');
+    const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+    for (const file of walk(dir).filter((f) => f.endsWith('.ts'))) {
+        assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /import \* as Joi from 'joi'/, path.relative(dir, file));
+    }
+    assert.match(fs.readFileSync(path.join(dir, 'config', 'base-env.schema.ts'), 'utf8'), /^import Joi from 'joi';/m);
+});
