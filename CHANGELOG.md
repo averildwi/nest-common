@@ -6,6 +6,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-11-23
+
 ### Fixed
 
 - ESM projects (`"type": "module"`, the Nest 12 default) failed at boot with
