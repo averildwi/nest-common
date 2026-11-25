@@ -31,6 +31,7 @@ const {
 } = require('../src/transforms/prismaFilter');
 const { parseSpec, isSatisfied } = require('../src/steps/installDeps');
 const { envBlueprint } = require('../src/steps/updateEnv');
+const lintFix = require('../src/steps/lintFix');
 
 // -- CLI -----------------------------------------------------------------
 
@@ -302,12 +303,95 @@ test('prismaFilter: resolveClientImport maps root and src layouts', () => {
 });
 
 test('prismaFilter: wrapValidationOptions nests joi options into libraryOptions', () => {
-    const source = "ConfigModule.forRoot({\n  validationOptions: {\n    abortEarly: false,\n    allowUnknown: true,\n  },\n})";
-    const out = wrapValidationOptions(source);
-    assert.ok(out.includes('libraryOptions: {'));
-    assert.ok(out.includes('abortEarly: false'));
+    const source = [
+        'ConfigModule.forRoot({',
+        '          validationOptions: {',
+        '            abortEarly: false,',
+        '            allowUnknown: true,',
+        '          },',
+        '})',
+    ].join('\n');
+    // The replacement keeps the original indentation, so the result is already
+    // formatted even when Prettier is not installed in the project.
+    assert.equal(
+        wrapValidationOptions(source),
+        [
+            'ConfigModule.forRoot({',
+            '          validationOptions: {',
+            '            libraryOptions: {',
+            '              abortEarly: false,',
+            '              allowUnknown: true,',
+            '            },',
+            '          },',
+            '})',
+        ].join('\n'),
+    );
     // idempotent
-    assert.equal(wrapValidationOptions(out), null);
+    assert.equal(wrapValidationOptions(wrapValidationOptions(source)), null);
+});
+
+test('prismaFilter: wrapValidationOptions keeps CRLF line endings', () => {
+    const source = 'x\r\n  validationOptions: {\r\n    abortEarly: false,\r\n    allowUnknown: true,\r\n  },\r\ny';
+    const out = wrapValidationOptions(source);
+    assert.ok(out.includes('libraryOptions'));
+    assert.doesNotMatch(out.replace(/\r\n/g, ''), /\n/, 'no bare LF was introduced');
+});
+
+test('prismaFilter: wrapValidationOptions on the shipped template matches the formatted output', () => {
+    const template = fs.readFileSync(path.join(__dirname, '..', 'templates', 'common', 'config', 'app-config.module.ts'), 'utf8');
+    const out = wrapValidationOptions(template);
+    assert.ok(out, 'the template must still contain the flat validationOptions');
+    assert.ok(
+        out.includes(
+            [
+                '          validationOptions: {',
+                '            libraryOptions: {',
+                '              abortEarly: false,',
+                '              allowUnknown: true,',
+                '            },',
+                '          },',
+            ].join('\n'),
+        ),
+        `unexpected shape:\n${out}`,
+    );
+});
+
+// -- format step ----------------------------------------------------------
+
+test('format: only the files this run wrote, deduplicated, code files only', () => {
+    const ctx = {
+        writtenFiles: [
+            { kind: 'modify', path: 'src/main.ts' },
+            { kind: 'modify', path: 'src/main.ts' },
+            { kind: 'create', path: 'src/common/dto/pagination.dto.ts' },
+            { kind: 'modify', path: 'package.json' },
+            { kind: 'create', path: '.env.example' },
+        ],
+    };
+    assert.deepEqual(lintFix.writtenFiles(ctx), ['package.json', 'src/common/dto/pagination.dto.ts', 'src/main.ts']);
+    assert.deepEqual(lintFix.formatArgs(['src/main.ts']), ['--write', '--end-of-line', 'auto', 'src/main.ts']);
+});
+
+test('format: skipped without prettier, or with --no-lint; never runs the lint script', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nc-fmt-'));
+    const base = { projectRoot: root, pkgJson: { scripts: { lint: 'eslint --fix' } } };
+
+    const without = await lintFix.plan({ ...base, lint: true });
+    assert.equal(without.entries[0].kind, 'skip');
+    assert.match(without.entries[0].reason, /prettier is not installed/);
+
+    fs.mkdirSync(path.join(root, 'node_modules', 'prettier', 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'node_modules', 'prettier', 'package.json'), JSON.stringify({ name: 'prettier', bin: { prettier: './bin/prettier.cjs' } }));
+    fs.writeFileSync(path.join(root, 'node_modules', 'prettier', 'bin', 'prettier.cjs'), '');
+
+    const withPrettier = await lintFix.plan({ ...base, lint: true });
+    assert.equal(withPrettier.entries[0].kind, 'run');
+    assert.doesNotMatch(withPrettier.entries[0].label, /lint/);
+    assert.equal(withPrettier.data.bin, path.join(root, 'node_modules', 'prettier', 'bin', 'prettier.cjs'));
+
+    const off = await lintFix.plan({ ...base, lint: false });
+    assert.equal(off.entries[0].kind, 'skip');
+    fs.rmSync(root, { recursive: true, force: true });
 });
 
 // -- install deps --------------------------------------------------------

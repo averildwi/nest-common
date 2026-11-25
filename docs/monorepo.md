@@ -36,7 +36,7 @@ npx @averildwi/nest-common [--cwd <path>] [--app <name|path>] [--pm <name>]
 | `--pm` given | Wins over every detection source |
 | `--yes` (or no TTY) | Never prompts; ambiguity becomes an error with code 2; Swagger defaults to enabled |
 | `--no-install` | Writes files but installs nothing |
-| `--no-lint` | Does not run the app's `lint` script |
+| `--no-lint` | Does not format the written files with Prettier |
 
 ## Resolution algorithm
 
@@ -74,7 +74,7 @@ npx @averildwi/nest-common [--cwd <path>] [--app <name|path>] [--pm <name>]
 
 ## Package manager commands
 
-| PM | Add dependencies (workspace) | Run a script (workspace) |
+| PM | Add dependencies (workspace) | Run a script (workspace, no longer used for formatting) |
 | --- | --- | --- |
 | npm | `<root>$ npm install <pkgs> --workspace <name>` | `<root>$ npm run lint --workspace <name>` |
 | pnpm | `<root>$ pnpm --filter <name> add <pkgs>` | `<root>$ pnpm --filter <name> run lint` |

@@ -37,11 +37,26 @@ function rewriteFilterImport(source, importPath) {
     return next === source ? null : next;
 }
 
-/** Nests Joi's validationOptions inside `libraryOptions` (@nestjs/config v12+). */
+/**
+ * Nests Joi's validationOptions inside `libraryOptions` (@nestjs/config v12+),
+ * keeping the indentation of the block it replaces so the result is already
+ * formatted (the lint step only formats when Prettier is installed).
+ */
 function wrapValidationOptions(source) {
+    // Keep the file's own line ending: the template ships LF, but a project
+    // may have checked it out (or rewritten it) with CRLF.
+    const eol = /\r\n/.test(source) ? '\r\n' : '\n';
     const next = source.replace(
-        /validationOptions:\s*\{\s*abortEarly:\s*false,\s*allowUnknown:\s*true,\s*\}/,
-        `validationOptions: {\n              libraryOptions: {\n                abortEarly: false,\n                allowUnknown: true,\n              },\n            }`,
+        /([ \t]*)validationOptions:\s*\{\s*abortEarly:\s*false,\s*allowUnknown:\s*true,\s*\}/,
+        (_match, indent) =>
+            [
+                `${indent}validationOptions: {`,
+                `${indent}  libraryOptions: {`,
+                `${indent}    abortEarly: false,`,
+                `${indent}    allowUnknown: true,`,
+                `${indent}  },`,
+                `${indent}}`,
+            ].join(eol),
     );
     return next === source ? null : next;
 }

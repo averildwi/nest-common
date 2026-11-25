@@ -101,6 +101,56 @@ test('integration: --dry-run changes nothing', (t) => {
     assert.equal(fs.readFileSync(path.join(root, 'src', 'main.ts'), 'utf8'), before);
 });
 
+test('integration: the format step runs prettier on exactly the files it wrote', (t) => {
+    const root = makeProject('format');
+    t.after(() => fs.removeSync(root));
+
+    // A fake local prettier: records its argv instead of formatting.
+    const bin = path.join(root, 'node_modules', 'prettier', 'bin', 'prettier.cjs');
+    fs.ensureDirSync(path.dirname(bin));
+    fs.writeJsonSync(path.join(root, 'node_modules', 'prettier', 'package.json'), {
+        name: 'prettier',
+        version: '3.10.1',
+        bin: { prettier: './bin/prettier.cjs' },
+    });
+    fs.writeFileSync(
+        bin,
+        [
+            "const fs = require('fs');",
+            "const path = require('path');",
+            "fs.writeFileSync(path.join(process.cwd(), 'prettier-argv.json'), JSON.stringify(process.argv.slice(2)));",
+        ].join('\n'),
+    );
+
+    const res = scaffold(root);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Formatted \d+ file\(s\) with Prettier/);
+    // The whole-repo `eslint --fix` gate is gone: nothing runs the lint script.
+    assert.doesNotMatch(res.stdout, /npm run lint/);
+
+    const argv = fs.readJsonSync(path.join(root, 'prettier-argv.json'));
+    assert.deepEqual(argv.slice(0, 3), ['--write', '--end-of-line', 'auto']);
+
+    const files = argv.slice(3);
+    assert.ok(files.includes('src/main.ts'));
+    assert.ok(files.includes('src/app.module.ts'));
+    assert.ok(files.includes('src/common/config/app-config.module.ts'));
+    // Only files this run wrote, and no non-code file.
+    assert.ok(!files.includes('src/app.controller.ts'), 'untouched project files are not reformatted');
+    assert.ok(!files.some((f) => f.endsWith('.env.example')), 'prettier cannot parse .env.example');
+    assert.deepEqual(files, [...new Set(files)], 'no duplicates');
+});
+
+test('integration: without prettier the run still succeeds and says why it skipped', (t) => {
+    const root = makeProject('noprettier');
+    t.after(() => fs.removeSync(root));
+
+    const res = scaffold(root);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /prettier is not installed in this project/);
+    assert.ok(fs.existsSync(path.join(root, 'src', 'common', 'config', 'app-config.module.ts')));
+});
+
 test('integration: rejects a non-Nest project', (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nest-common-nonest-'));
     t.after(() => fs.removeSync(root));

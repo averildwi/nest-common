@@ -18,6 +18,27 @@ function findPackageFile(startDir, packageName) {
     }
 }
 
+/** Resolves the JS entrypoint declared in a package's `bin` field. */
+function resolvePackageBin(startDir, packageName, binName = packageName) {
+    const pkgPath = findPackageFile(startDir, packageName);
+    if (!pkgPath) return null;
+
+    let pkg;
+    try {
+        pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    } catch {
+        return null;
+    }
+
+    let entry;
+    if (typeof pkg.bin === 'string') entry = pkg.bin;
+    else if (pkg.bin && typeof pkg.bin === 'object') entry = pkg.bin[binName] || Object.values(pkg.bin)[0];
+    if (!entry) return null;
+
+    const binPath = path.resolve(path.dirname(pkgPath), entry);
+    return fs.existsSync(binPath) ? binPath : null;
+}
+
 /** Walks up from `startDir` looking for a single file. */
 function findUp(startDir, fileName) {
     let dir = path.resolve(startDir);
@@ -45,4 +66,4 @@ function readPackageJson(dir) {
     }
 }
 
-module.exports = { findPackageFile, findUp, findPnpMarker, readPackageJson };
+module.exports = { findPackageFile, resolvePackageBin, findUp, findPnpMarker, readPackageJson };

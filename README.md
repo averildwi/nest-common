@@ -31,7 +31,7 @@ npx @averildwi/nest-common
 | `--swagger` / `--no-swagger` | Enable / skip the Swagger API documentation setup |
 | `--pm <name>` | `npm`, `pnpm`, `yarn` or `bun` (default: auto-detect) |
 | `--no-install` | Only write files, don't install packages |
-| `--no-lint` | Don't run the project's `lint` script |
+| `--no-lint` | Don't format the written files with Prettier |
 | `-y, --yes` | Accept defaults and skip all prompts |
 | `--dry-run` | Show what would change without touching anything |
 | `--no-color` | Disable coloured output (`NO_COLOR` is respected too) |
@@ -167,7 +167,8 @@ reflects only the steps that actually run:
       (JWT_SECRET is randomly generated per project)
    │
    ▼
-[6/*] Auto-format the injected code with the project's lint script (when configured)
+[6/*] Format only the files this run wrote with the project's own Prettier
+      (skipped when Prettier is not installed; CRLF files stay CRLF)
 ```
 
 The CLI is **idempotent** — running it again on a project that already has

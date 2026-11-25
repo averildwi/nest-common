@@ -106,6 +106,8 @@ async function executePlan(ctx, plan) {
     const files = [];
     const warnings = [];
     const completed = [];
+    // The lint step formats exactly what earlier steps wrote.
+    ctx.writtenFiles = files;
 
     for (const [index, item] of actionable.entries()) {
         ui.step(index + 1, actionable.length, item.step.title);
