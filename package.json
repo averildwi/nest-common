@@ -37,7 +37,7 @@
   },
   "homepage": "https://github.com/averildwi/nest-common#readme",
   "engines": {
-    "node": ">=20.0.0"
+    "node": "^20.19 || ^22.12 || >=24.0"
   },
   "type": "commonjs",
   "dependencies": {

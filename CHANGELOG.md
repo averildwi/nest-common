@@ -6,6 +6,31 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The last step formats **only the files this run wrote**, with the project's
+  own Prettier (`prettier --write --end-of-line auto <files>`), instead of
+  running the `lint` script:
+  - on Nest 12 that script is `oxlint`, which never formats, so the injected
+    `app.module.ts` / `main.ts` code failed `prettier --check`,
+  - on Nest 11 it is `eslint --fix` over the whole repo, which also reformatted
+    files outside this run (17.5 s measured on a scaffolded Nest 11 app, against
+    7.1 s for Prettier on the 23 written files).
+  Prettier is resolved in the project (hoisted workspace root included), never
+  downloaded; without it the step is skipped. CRLF files stay CRLF. Verified on
+  fresh Nest 12 ESM, Nest 12 CommonJS and Nest 11 apps: the written files pass
+  `prettier --check`, and on Nest 11 `eslint` without `--fix` and `tsc` are clean.
+  `--no-lint` now skips this formatting step.
+- `engines.node` is now `^20.19 || ^22.12 || >=24.0`, like the other scaffolds.
+
+### Fixed
+
+- The `libraryOptions` block written for `@nestjs/config` 12 was indented
+  wrongly. It now keeps the indentation (and line ending) of the block it
+  replaces, so it is formatted even when Prettier is not installed.
+- On Windows, a command whose path contains a space (for example
+  `C:\Program Files\nodejs\node.exe`) was split by the shell. Executables are
+  now spawned without a shell; package-manager `.cmd` shims still use one.
 ## [3.1.2] - 2026-11-23
 
 ### Fixed
