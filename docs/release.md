@@ -14,7 +14,7 @@ Run these steps from the package directory before publishing.
    npm test
    ```
 
-   Expected: all files in `test/` pass on Node 20, 22, and 24.
+   Expected: all files in `test/` pass on Node 20, 22, 24, and 26.
 
 3. **Inspect the published package**
 
