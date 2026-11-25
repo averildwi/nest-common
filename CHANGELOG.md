@@ -6,6 +6,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-11-25
+
 ### Changed
 
 - The last step formats **only the files this run wrote**, with the project's
